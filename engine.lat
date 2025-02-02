@@ -1,0 +1,426 @@
+0 #include <iostream>
+1 #include <vector>
+2 #include <memory>
+3 #include <string>
+4 #include <cmath>
+5 #include <queue>
+6 #include <map>
+7 #include <functional>
+8 #include <fstream>
+9 #include <sstream>
+10 #include <iomanip>
+11 #include <algorithm>
+12 #include <cstdint>
+13 bool endsWith(const std::string& str, const std::string& suffix) {
+14 if (suffix.size() > str.size())
+15 return false;
+16 return std::equal(suffix.rbegin(), suffix.rend(), str.rbegin());}
+17 const double PI = 3.14159265358979323846;
+18 class Saveable {
+19 public:
+20 virtual ~Saveable() = default;
+21 virtual void save(const std::string& path) const = 0;
+22 virtual bool restore(const std::string& path) = 0;
+23 virtual std::string getStateAsString() const = 0;
+24 virtual bool loadStateFromString(const std::string& state) = 0;};
+25 struct MidiEvent {
+26 enum class Type {
+27 NoteOn,
+28 NoteOff,
+29 ControlChange};
+30 Type type;
+31 uint8_t channel;
+32 uint8_t note;
+33 uint8_t velocity;
+34 double timestamp;};
+35 class AudioBuffer : public Saveable {
+36 public:
+37 AudioBuffer(size_t capacity = 44100) : capacity_(capacity) {
+38 buffer_.resize(capacity);}
+39 void write(float sample) {
+40 if (writePos_ < capacity_) {
+41 buffer_[writePos_++] = sample;}}
+42 float read() {
+43 if (readPos_ < writePos_) {
+44 float sample = buffer_[readPos_++];
+45 return sample;}
+46 return 0.0f;}
+47 bool isEmpty() const {
+48 return readPos_ >= writePos_;}
+49 void reset() {
+50 readPos_ = 0;}
+51 void clear() {
+52 readPos_ = 0;
+53 writePos_ = 0;
+54 buffer_.assign(capacity_, 0.0f);}
+55 void save(const std::string& path) const override {
+56 if (endsWith(path, ".wav")) {
+57 saveAsWav(path);}
+58 else {
+59 saveBinary(path);}}
+60 bool restore(const std::string& path) override {
+61 if (endsWith(path, ".wav")) {
+62 return restoreFromWav(path);}
+63 return restoreFromBinary(path);}
+64 std::string getStateAsString() const override {
+65 std::stringstream ss;
+66 ss << writePos_ << " ";
+67 for (size_t i = 0; i < writePos_; ++i) {
+68 ss << buffer_[i] << " ";}
+69 return ss.str();}
+70 bool loadStateFromString(const std::string& state) override {
+71 std::stringstream ss(state);
+72 size_t size;
+73 ss >> size;
+74 if (size > capacity_) return false;
+75 clear();
+76 float sample;
+77 while (ss >> sample && writePos_ < size) {
+78 write(sample);}
+79 return true;}
+80 private:
+81 void saveAsWav(const std::string& path) const {
+82 std::ofstream file(path, std::ios::binary);
+83 if (!file) return;
+84 std::vector<int16_t> intSamples;
+85 for (size_t i = 0; i < writePos_; ++i) {
+86 intSamples.push_back(static_cast<int16_t>(buffer_[i] * 32767.0f));}
+87 uint32_t dataSize = intSamples.size() * sizeof(int16_t);
+88 uint32_t fileSize = 36 + dataSize;
+89 uint32_t sampleRate = 44100;
+90 uint16_t channels = 1;
+91 file.write("RIFF", 4);
+92 file.write(reinterpret_cast<const char*>(&fileSize), 4);
+93 file.write("WAVE", 4);
+94 file.write("fmt ", 4);
+95 uint32_t fmtSize = 16;
+96 file.write(reinterpret_cast<const char*>(&fmtSize), 4);
+97 uint16_t format = 1;
+98 file.write(reinterpret_cast<const char*>(&format), 2);
+99 file.write(reinterpret_cast<const char*>(&channels), 2);
+100 file.write(reinterpret_cast<const char*>(&sampleRate), 4);
+101 uint32_t byteRate = sampleRate * channels * sizeof(int16_t);
+102 file.write(reinterpret_cast<const char*>(&byteRate), 4);
+103 uint16_t blockAlign = channels * sizeof(int16_t);
+104 file.write(reinterpret_cast<const char*>(&blockAlign), 2);
+105 uint16_t bitsPerSample = 16;
+106 file.write(reinterpret_cast<const char*>(&bitsPerSample), 2);
+107 file.write("data", 4);
+108 file.write(reinterpret_cast<const char*>(&dataSize), 4);
+109 file.write(reinterpret_cast<const char*>(intSamples.data()), dataSize);}
+110 void saveBinary(const std::string& path) const {
+111 std::ofstream file(path, std::ios::binary);
+112 if (!file) return;
+113 file.write(reinterpret_cast<const char*>(&writePos_), sizeof(writePos_));
+114 file.write(reinterpret_cast<const char*>(buffer_.data()), writePos_ * sizeof(float));}
+115 bool restoreFromWav(const std::string& path) {
+116 std::ifstream file(path, std::ios::binary);
+117 if (!file) return false;
+118 char header[44];
+119 file.read(header, 44);
+120 uint32_t dataSize;
+121 file.seekg(40);
+122 file.read(reinterpret_cast<char*>(&dataSize), 4);
+123 std::vector<int16_t> intSamples(dataSize / sizeof(int16_t));
+124 file.read(reinterpret_cast<char*>(intSamples.data()), dataSize);
+125 clear();
+126 for (int16_t sample : intSamples) {
+127 write(sample / 32768.0f);}
+128 return true;}
+129 bool restoreFromBinary(const std::string& path) {
+130 std::ifstream file(path, std::ios::binary);
+131 if (!file) return false;
+132 size_t size;
+133 file.read(reinterpret_cast<char*>(&size), sizeof(size));
+134 if (size > capacity_) return false;
+135 clear();
+136 file.read(reinterpret_cast<char*>(buffer_.data()), size * sizeof(float));
+137 writePos_ = size;
+138 return true;}
+139 std::vector<float> buffer_;
+140 size_t capacity_;
+141 size_t readPos_ = 0;
+142 size_t writePos_ = 0;};
+143 class Plugin : public Saveable {
+144 public:
+145 virtual ~Plugin() = default;
+146 virtual std::string getName() const = 0;
+147 virtual std::string getType() const = 0;
+148 virtual void process(std::vector<float>& buffer) = 0;
+149 virtual void setParameter(const std::string& name, float value) = 0;
+150 virtual float getParameter(const std::string& name) = 0;
+151 virtual void loadScript(const std::string& language, const std::string& code) {}};
+152 class Distortion : public Plugin {
+153 public:
+154 std::string getName() const override { return "Distortion"; }
+155 std::string getType() const override { return "Effect"; }
+156 void process(std::vector<float>& buffer) override {
+157 for (auto& sample : buffer) {
+158 sample = std::tanh(drive_ * sample);}}
+159 void setParameter(const std::string& name, float value) override {
+160 if (name == "drive") {
+161 drive_ = value;
+162 std::cout << "Distortion drive set to: " << drive_ << std::endl;}}
+163 float getParameter(const std::string& name) override {
+164 if (name == "drive") return drive_;
+165 return 0.0f;}
+166 void save(const std::string& path) const override {
+167 std::ofstream file(path);
+168 file << getStateAsString();}
+169 bool restore(const std::string& path) override {
+170 std::ifstream file(path);
+171 if (!file) return false;
+172 std::string state;
+173 std::getline(file, state);
+174 return loadStateFromString(state);}
+175 std::string getStateAsString() const override {
+176 return std::to_string(drive_);}
+177 bool loadStateFromString(const std::string& state) override {
+178 try {
+179 drive_ = std::stof(state);
+180 return true;}
+181 catch (...) {
+182 return false;}}
+183 private:
+184 float drive_ = 1.0f;};
+185 class ScriptPlugin : public Plugin {
+186 public:
+187 ScriptPlugin(const std::string& name) : name_(name) {}
+188 std::string getName() const override { return name_; }
+189 std::string getType() const override { return "Script"; }
+190 void process(std::vector<float>& buffer) override {
+191 if (processFunc_) {
+192 processFunc_(buffer);}}
+193 void setParameter(const std::string& name, float value) override {}
+194 float getParameter(const std::string& name) override { return 0.0f; }
+195 void loadScript(const std::string& language, const std::string& code) override {
+196 script_ = code;
+197 if (language == "cpp") {
+198 processFunc_ = [](std::vector<float>& buf) {
+199 for (auto& sample : buf) {
+200 sample *= 0.5f;}};
+201 std::cout << "Loaded script for " << name_ << std::endl;}}
+202 void save(const std::string& path) const override {
+203 std::ofstream file(path);
+204 file << getStateAsString();}
+205 bool restore(const std::string& path) override {
+206 std::ifstream file(path);
+207 if (!file) return false;
+208 std::string state;
+209 std::getline(file, state);
+210 return loadStateFromString(state);}
+211 std::string getStateAsString() const override {
+212 return name_ + "\n" + script_;}
+213 bool loadStateFromString(const std::string& state) override {
+214 std::stringstream ss(state);
+215 std::string name, script;
+216 std::getline(ss, name);
+217 std::getline(ss, script);
+218 name_ = name;
+219 loadScript("cpp", script);
+220 return true;}
+221 private:
+222 std::string name_;
+223 std::string script_;
+224 std::function<void(std::vector<float>&)> processFunc_;};
+225 class AudioTrack : public Saveable {
+226 public:
+227 AudioTrack(int id) : id_(id), volume_(1.0f), isPlaying_(false) {
+228 buffer_ = std::make_shared<AudioBuffer>();
+229 std::cout << "Created track " << id_ << std::endl;}
+230 void addPlugin(std::shared_ptr<Plugin> plugin) {
+231 plugins_.push_back(plugin);
+232 std::cout << "Added plugin " << plugin->getName() << " to track " << id_ << std::endl;}
+233 void removePlugin(const std::string& name) {
+234 plugins_.erase(
+235 std::remove_if(plugins_.begin(), plugins_.end(),
+236 [&name](const auto& p) { return p->getName() == name; }),
+237 plugins_.end());}
+238 void generateTestTone(float frequency, float duration, float sampleRate = 44100) {
+239 float amplitude = 0.5f;
+240 size_t numSamples = static_cast<size_t>(duration * sampleRate);
+241 for (size_t i = 0; i < numSamples; i++) {
+242 float t = static_cast<float>(i) / sampleRate;
+243 float sample = amplitude * std::sin(2.0f * PI * frequency * t);
+244 buffer_->write(sample);}
+245 std::cout << "Generated " << duration << "s test tone at " << frequency << "Hz on track " << id_ << std::endl;}
+246 void addMidiEvent(const MidiEvent& event) {
+247 std::cout << "Track " << id_ << " received MIDI event: ";
+248 if (event.type == MidiEvent::Type::NoteOn) {
+249 float freq = 440.0f * std::pow(2.0f, (event.note - 69) / 12.0f);
+250 std::cout << "Note On, frequency: " << freq << "Hz" << std::endl;
+251 generateTestTone(freq, 1.0f);}}
+252 float getSample() {
+253 if (!isPlaying_ || buffer_->isEmpty()) {
+254 return 0.0f;}
+255 float sample = buffer_->read() * volume_;
+256 std::vector<float> buf = { sample };
+257 for (auto& plugin : plugins_) {
+258 plugin->process(buf);}
+259 return buf[0];}
+260 void play() {
+261 isPlaying_ = true;
+262 buffer_->reset();
+263 std::cout << "Track " << id_ << " started playing" << std::endl;}
+264 void stop() {
+265 isPlaying_ = false;
+266 std::cout << "Track " << id_ << " stopped playing" << std::endl;}
+267 void setVolume(float volume) {
+268 volume_ = volume;
+269 std::cout << "Track " << id_ << " volume set to " << volume_ << std::endl;}
+270 void save(const std::string& path) const override {
+271 if (endsWith(path, ".wav")) {
+272 buffer_->save(path);
+273 std::cout << "Saved track " << id_ << " audio to: " << path << std::endl;}
+274 else {
+275 std::ofstream file(path);
+276 file << getStateAsString();
+277 std::cout << "Saved track " << id_ << " state to: " << path << std::endl;}}
+278 bool restore(const std::string& path) override {
+279 if (endsWith(path, ".wav")) {
+280 bool success = buffer_->restore(path);
+281 if (success) {
+282 std::cout << "Restored track " << id_ << " audio from: " << path << std::endl;}
+283 return success;}
+284 else {
+285 std::ifstream file(path);
+286 if (!file) return false;
+287 std::string state;
+288 std::getline(file, state);
+289 bool success = loadStateFromString(state);
+290 if (success) {
+291 std::cout << "Restored track " << id_ << " state from: " << path << std::endl;}
+292 return success;}}
+293 std::string getStateAsString() const override {
+294 std::stringstream ss;
+295 ss << id_ << " " << volume_ << " " << isPlaying_ << "\n";
+296 ss << plugins_.size() << "\n";
+297 for (const auto& plugin : plugins_) {
+298 ss << plugin->getStateAsString() << "\n";}
+299 ss << buffer_->getStateAsString();
+300 return ss.str();}
+301 bool loadStateFromString(const std::string& state) override {
+302 std::stringstream ss(state);
+303 ss >> id_ >> volume_ >> isPlaying_;
+304 size_t pluginCount;
+305 ss >> pluginCount;
+306 plugins_.clear();
+307 for (size_t i = 0; i < pluginCount; ++i) {
+308 std::string pluginState;
+309 std::getline(ss, pluginState);
+310 if (pluginState.empty())
+311 std::getline(ss, pluginState); 
+312 if (pluginState.find("Distortion") != std::string::npos) {
+313 auto plugin = std::make_shared<Distortion>();
+314 plugin->loadStateFromString(pluginState);
+315 plugins_.push_back(plugin);}
+316 else if (pluginState.find("Script") != std::string::npos) {
+317 auto plugin = std::make_shared<ScriptPlugin>("restored_script");
+318 plugin->loadStateFromString(pluginState);
+319 plugins_.push_back(plugin);}}
+320 std::string bufferState;
+321 std::getline(ss, bufferState);
+322 return buffer_->loadStateFromString(bufferState);}
+323 private:
+324 int id_;
+325 float volume_;
+326 bool isPlaying_;
+327 std::shared_ptr<AudioBuffer> buffer_;
+328 std::vector<std::shared_ptr<Plugin>> plugins_;};
+329 class DAW : public Saveable {
+330 public:
+331 DAW() {
+332 std::cout << "DAW initialized" << std::endl;}
+333 std::shared_ptr<AudioTrack> createTrack() {
+334 auto track = std::make_shared<AudioTrack>(nextTrackId_++);
+335 tracks_.push_back(track);
+336 return track;}
+337 float processNextFrame() {
+338 float mixedSample = 0.0f;
+339 for (auto& track : tracks_) {
+340 mixedSample += track->getSample();}
+341 return std::max(-1.0f, std::min(1.0f, mixedSample));}
+342 void playAll() {
+343 std::cout << "Playing all tracks" << std::endl;
+344 for (auto& track : tracks_) {
+345 track->play();}}
+346 void stopAll() {
+347 std::cout << "Stopping all tracks" << std::endl;
+348 for (auto& track : tracks_) {
+349 track->stop();}}
+350 float getNextSample() {
+351 return processNextFrame();}
+352 void save(const std::string& path) const override {
+353 std::cout << "Saving DAW state to: " << path << std::endl;
+354 std::ofstream file(path);
+355 file << getStateAsString();}
+356 bool restore(const std::string& path) override {
+357 std::cout << "Restoring DAW state from: " << path << std::endl;
+358 std::ifstream file(path);
+359 if (!file) return false;
+360 std::string state;
+361 std::getline(file, state, '\0');
+362 return loadStateFromString(state);}
+363 std::string getStateAsString() const override {
+364 std::stringstream ss;
+365 ss << tracks_.size() << "\n" << nextTrackId_ << "\n";
+366 for (const auto& track : tracks_) {
+367 ss << track->getStateAsString() << "\n===TRACK_END===\n";}
+368 return ss.str();}
+369 bool loadStateFromString(const std::string& state) override {
+370 std::stringstream ss(state);
+371 size_t trackCount;
+372 ss >> trackCount >> nextTrackId_;
+373 tracks_.clear();
+374 for (size_t i = 0; i < trackCount; ++i) {
+375 auto track = std::make_shared<AudioTrack>(0); 
+376 std::string trackState;
+377 std::string line;
+378 while (std::getline(ss, line) && line != "===TRACK_END===") {
+379 trackState += line + "\n";}
+380 if (track->loadStateFromString(trackState)) {
+381 tracks_.push_back(track);}}
+382 return true;}
+383 private:
+384 std::vector<std::shared_ptr<AudioTrack>> tracks_;
+385 int nextTrackId_ = 0;};
+386 int main() {
+387 std::cout << "Starting DAW application with full save/restore system\n" << std::endl;
+388 DAW daw;
+389 auto track1 = daw.createTrack();
+390 auto track2 = daw.createTrack();
+391 auto distortion = std::make_shared<Distortion>();
+392 distortion->setParameter("drive", 2.0f);
+393 track1->addPlugin(distortion);
+394 auto scriptPlugin = std::make_shared<ScriptPlugin>("CustomGain");
+395 scriptPlugin->loadScript("cpp", "gain_reduction");
+396 track2->addPlugin(scriptPlugin);
+397 MidiEvent noteOn{
+398 MidiEvent::Type::NoteOn,
+399 0, 60, 100, 0.0 };
+400 track1->addMidiEvent(noteOn);
+401 track2->generateTestTone(554.37f, 2.0f);
+402 track1->setVolume(0.8f);
+403 track2->setVolume(0.5f);
+404 std::cout << "\nDemonstrating save system..." << std::endl;
+405 distortion->save("distortion_preset.txt");
+406 track2->save("track2.wav");
+407 track1->save("track1_state.txt");
+408 daw.save("session.daw");
+409 std::cout << "\nDemonstrating restore system..." << std::endl;
+410 DAW daw2;
+411 if (daw2.restore("session.daw")) {
+412 std::cout << "Successfully restored DAW session" << std::endl;}
+413 auto newDistortion = std::make_shared<Distortion>();
+414 if (newDistortion->restore("distortion_preset.txt")) {
+415 std::cout << "Successfully restored distortion preset" << std::endl;}
+416 daw.playAll();
+417 std::cout << "\nProcessing first 10 samples:" << std::endl;
+418 std::cout << std::fixed << std::setprecision(6);
+419 for (int i = 0; i < 10; i++) {
+420 float sample = daw.getNextSample();
+421 std::cout << "Sample " << i << ": " << sample << std::endl;}
+422 std::cout << "\nPress Enter to stop playback..." << std::endl;
+423 std::cin.get();
+424 daw.stopAll();
+425 return 0;}
