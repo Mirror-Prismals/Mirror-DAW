@@ -14,97 +14,97 @@ p
 10 class Track;
 11 class AudioBuffer;
 12 struct AudioSettings {
-13  unsigned int sampleRate = 44100;
-14  unsigned int bufferSize = 512;
-15  unsigned int channels = 2;
+13 unsigned int sampleRate = 44100;
+14 unsigned int bufferSize = 512;
+15 unsigned int channels = 2;
 16 };
 17 enum class Role {
-18  Left,
-19  Right,
-20  FrontFill,
-21  Sub
+18 Left,
+19 Right,
+20 FrontFill,
+21 Sub
 22 };
 23 class Core {
 24 public:
-25    Core(const AudioSettings& settings = AudioSettings{});
-26    ~Core();
-27    // Audio functionality
-28    bool startAudio();
-29    void stopAudio();
-30   std::shared_ptr<Track> createTrack(Role role);
-31    void removeTrack(const std::string& trackId);
-32    void mixTracks();
+25 Core(const AudioSettings& settings = AudioSettings{});
+26 ~Core();
+27 // Audio functionality
+28 bool startAudio();
+29 void stopAudio();
+30 std::shared_ptr<Track> createTrack(Role role);
+31 void removeTrack(const std::string& trackId);
+32 void mixTracks();
 33   
-34    // World interaction
-35    void updateWorld(float deltaTime);
-36    void handleInput(const std::string& input);
+34 // World interaction
+35 void updateWorld(float deltaTime);
+36 void handleInput(const std::string& input);
 37    
 38 private:
-39   std::unique_ptr<AudioEngine> audioEngine;
-40   std::unique_ptr<WorldEngine> worldEngine;
-41   std::vector<std::shared_ptr<Track>> tracks;
-42    AudioSettings settings;
+39 std::unique_ptr<AudioEngine> audioEngine;
+40 std::unique_ptr<WorldEngine> worldEngine;
+41 std::vector<std::shared_ptr<Track>> tracks;
+42 AudioSettings settings;
 43 };
 44 // Track.hpp
 45 class Track {
 46 public:
-47   Track(Role role, unsigned int sampleRate, unsigned int channels);
+47 Track(Role role, unsigned int sampleRate, unsigned int channels);
 48   
-49    void startRecording();
-50   void stopRecording();
-51    void startPlayback();
-52    void stopPlayback();
+49 void startRecording();
+50 void stopRecording();
+51 void startPlayback();
+52 void stopPlayback();
 53   
-54  void setVolume(float volume);
-55   void setPanning(float pan);
+54 void setVolume(float volume);
+55 void setPanning(float pan);
 56  
 57 std::string getId() const { return id; }
 58 Role getRole() const { return role; }
 59
-60  private:
-61   std::string id;
-62  Role role;
-63  std::shared_ptr<AudioBuffer> buffer;
-64  float volume;
-65  float panning;
-66  bool isRecording;
-67  bool isPlaying;
+60 private:
+61 std::string id;
+62 Role role;
+63 std::shared_ptr<AudioBuffer> buffer;
+64 float volume;
+65 float panning;
+66 bool isRecording;
+67 bool isPlaying;
 68 };
 69 // AudioEngine.hpp
 70 class AudioEngine {
 71 public:
-72   AudioEngine(const AudioSettings& settings);
-73   ~AudioEngine();
+72 AudioEngine(const AudioSettings& settings);
+73 ~AudioEngine();
 77    
-78    bool initialize();
-79    void shutdown();
+78 bool initialize();
+79 void shutdown();
 80    
-81   void processAudio(float output, unsigned int nFrames);
+81 void processAudio(float output, unsigned int nFrames);
 82 void addTrack(std::shared_ptr<Track> track);
-83   void removeTrack(const std::string& trackId);
+83 void removeTrack(const std::string& trackId);
 84    
 85 private:
-86   AudioSettings settings;
-87   std::vector<std::shared_ptr<Track>> activeTracks;
-88   std::function<void(float*, unsigned int)> audioCallback;
+86 AudioSettings settings;
+87 std::vector<std::shared_ptr<Track>> activeTracks;
+88 std::function<void(float*, unsigned int)> audioCallback;
 89 };
 90 // WorldEngine.hpp
 91 class WorldEngine {
 92 public:
-93   WorldEngine();
-93  ~WorldEngine();
+93 WorldEngine();
+93 ~WorldEngine();
 93  
-96    void update(float deltaTime);
-97   void handleInput(const std::string& input); 
+96 void update(float deltaTime);
+97 void handleInput(const std::string& input); 
 98   
-99  // Add methods for world generation, physics, etc.
-100  void generateTerrain();
+99 // Add methods for world generation, physics, etc.
+100 void generateTerrain();
 101 void updateDayNightCycle(float time);
 102  
 103 private:
-104    // Add members for terrain, physics, lighting, etc.
+104 // Add members for terrain, physics, lighting, etc.
 105 float timeOfDay;
-106  std::vector<float> terrainData;
+106 std::vector<float> terrainData;
 107 };
 108 } // namespace DawGame ;}mida 
 || |> ##!!
