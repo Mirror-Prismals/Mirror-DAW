@@ -9,7 +9,7 @@
 7 we check if the current number n falls into one of the defined segments.
 8 If it does, we append the computed value (n - segment_start) to that line.
 9 ||
-10 ||
+10 |>
 11 layers_config is a list where each element represents one layer.
 12 Each layer is itself a list of segments.
 13 A segment is a tuple: (segment_start, segment_end) (both inclusive).
