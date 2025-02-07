@@ -1,510 +1,288 @@
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
+#include <jack/jack.h>
 #include <vector>
-#include <unordered_map>
-#include <random>
-#include <cmath>
-#include <numeric>
+#include <fstream>
+#include <map>
+#include <string>
+#include <direct.h>
+#include <algorithm>
 
-const unsigned int WINDOW_WIDTH = 800;
-const unsigned int WINDOW_HEIGHT = 600;
-const float RENDER_DISTANCE = 16.0f;
-const int CHUNK_SIZE = 16;
+struct Track {
+    std::string filename;
+    std::string role;
+    std::vector<float> data;
+};
 
-// Camera variables
-glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);  // Raised camera height
-glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
-
-// Mouse variables
-float yaw = -90.0f;
-float pitch = 0.0f;
-float lastX = WINDOW_WIDTH / 2.0f;
-float lastY = WINDOW_HEIGHT / 2.0f;
-bool firstMouse = true;
-
-// Timing
-float deltaTime = 0.0f;
-float lastFrame = 0.0f;
-
-class PerlinNoise {
+class MirrorDaw {
 private:
-    std::vector<int> p;
+    std::vector<Track> tracks;
+    jack_client_t* client;
+    jack_port_t* input_port;
+    jack_port_t* output_left;
+    jack_port_t* output_right;
+    bool is_recording;
+    bool is_playing;
+    std::vector<float> current_recording;
+    std::map<std::string, std::vector<float>> playback_buffers;
+    size_t playback_position;
+    std::string tracks_dir;
+    std::vector<std::string> valid_roles;
 
-    static double fade(double t) {
-        return t * t * t * (t * (t * 6 - 15) + 10);
+    static int process_callback(jack_nframes_t nframes, void* arg) {
+        MirrorDaw* daw = static_cast<MirrorDaw*>(arg);
+
+        // Handle recording
+        if (daw->is_recording) {
+            float* in = (float*)jack_port_get_buffer(daw->input_port, nframes);
+            if (in != nullptr) {
+                daw->current_recording.insert(
+                    daw->current_recording.end(),
+                    in,
+                    in + nframes
+                );
+            }
+        }
+
+        // Handle playback
+        if (daw->is_playing) {
+            float* out_left = (float*)jack_port_get_buffer(daw->output_left, nframes);
+            float* out_right = (float*)jack_port_get_buffer(daw->output_right, nframes);
+
+            // Clear output buffers
+            std::fill(out_left, out_left + nframes, 0.0f);
+            std::fill(out_right, out_right + nframes, 0.0f);
+
+            for (size_t i = 0; i < nframes; i++) {
+                if (daw->playback_position >= daw->playback_buffers["left"].size()) {
+                    daw->is_playing = false;
+                    break;
+                }
+
+                // Left channel goes fully left
+                out_left[i] += daw->playback_buffers["left"][daw->playback_position];
+
+                // Right channel goes fully right
+                out_right[i] += daw->playback_buffers["right"][daw->playback_position];
+
+                // Front fill and sub are centered (split equally between L/R)
+                float center_mix = (daw->playback_buffers["front_fill"][daw->playback_position] +
+                    daw->playback_buffers["sub"][daw->playback_position]) * 0.5f;
+                out_left[i] += center_mix;
+                out_right[i] += center_mix;
+
+                daw->playback_position++;
+            }
+        }
+
+        return 0;
     }
 
-    static double lerp(double t, double a, double b) {
-        return a + t * (b - a);
-    }
+    void save_track_to_wav(const std::string& filename, const std::vector<float>& data) {
+        std::ofstream file(filename, std::ios::binary);
+        if (!file) {
+            throw std::runtime_error("Failed to create file: " + filename);
+        }
 
-    static double grad(int hash, double x, double y, double z) {
-        int h = hash & 15;
-        double u = h < 8 ? x : y;
-        double v = h < 4 ? y : h == 12 || h == 14 ? x : z;
-        return ((h & 1) == 0 ? u : -u) + ((h & 2) == 0 ? v : -v);
+        struct WavHeader {
+            char riff[4] = { 'R', 'I', 'F', 'F' };
+            uint32_t fileSize;
+            char wave[4] = { 'W', 'A', 'V', 'E' };
+            char fmt[4] = { 'f', 'm', 't', ' ' };
+            uint32_t fmtSize = 16;
+            uint16_t audioFormat = 3;
+            uint16_t numChannels = 1;
+            uint32_t sampleRate;
+            uint32_t byteRate;
+            uint16_t blockAlign;
+            uint16_t bitsPerSample = 32;
+            char data[4] = { 'd', 'a', 't', 'a' };
+            uint32_t dataSize;
+        } header;
+
+        header.sampleRate = jack_get_sample_rate(client);
+        header.byteRate = header.sampleRate * sizeof(float);
+        header.blockAlign = sizeof(float);
+        header.dataSize = data.size() * sizeof(float);
+        header.fileSize = header.dataSize + sizeof(WavHeader) - 8;
+
+        file.write(reinterpret_cast<char*>(&header), sizeof(WavHeader));
+        file.write(reinterpret_cast<const char*>(data.data()), data.size() * sizeof(float));
     }
 
 public:
-    PerlinNoise(int seed = 0) {
-        p.resize(512);
-        std::iota(p.begin(), p.begin() + 256, 0);
-        std::mt19937 gen(seed);
-        std::shuffle(p.begin(), p.begin() + 256, gen);
-        for (int i = 0; i < 256; i++) {
-            p[256 + i] = p[i];
+    MirrorDaw() : is_recording(false), is_playing(false), playback_position(0), tracks_dir("tracks") {
+        valid_roles = { "left", "front_fill", "sub", "right" };
+        _mkdir(tracks_dir.c_str());
+
+        jack_status_t status;
+        client = jack_client_open("MirrorDaw", JackNullOption, &status);
+        if (client == nullptr) {
+            throw std::runtime_error("Failed to connect to JACK server");
+        }
+
+        input_port = jack_port_register(client, "input", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        output_left = jack_port_register(client, "output_left", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+        output_right = jack_port_register(client, "output_right", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+
+        if (input_port == nullptr || output_left == nullptr || output_right == nullptr) {
+            jack_client_close(client);
+            throw std::runtime_error("Failed to create ports");
+        }
+
+        jack_set_process_callback(client, process_callback, this);
+
+        if (jack_activate(client) != 0) {
+            jack_client_close(client);
+            throw std::runtime_error("Failed to activate JACK client");
         }
     }
 
-    double noise(double x, double y, double z) {
-        int X = static_cast<int>(std::floor(x)) & 255;
-        int Y = static_cast<int>(std::floor(y)) & 255;
-        int Z = static_cast<int>(std::floor(z)) & 255;
-
-        x -= std::floor(x);
-        y -= std::floor(y);
-        z -= std::floor(z);
-
-        double u = fade(x);
-        double v = fade(y);
-        double w = fade(z);
-
-        int A = p[X] + Y;
-        int AA = p[A] + Z;
-        int AB = p[A + 1] + Z;
-        int B = p[X + 1] + Y;
-        int BA = p[B] + Z;
-        int BB = p[B + 1] + Z;
-
-        return lerp(w, lerp(v, lerp(u, grad(p[AA], x, y, z),
-            grad(p[BA], x - 1, y, z)),
-            lerp(u, grad(p[AB], x, y - 1, z),
-                grad(p[BB], x - 1, y - 1, z))),
-            lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),
-                grad(p[BA + 1], x - 1, y, z - 1)),
-                lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
-                    grad(p[BB + 1], x - 1, y - 1, z - 1))));
-    }
-
-    double ridgeNoise(double x, double y, double z) {
-        double n = noise(x, y, z);
-        n = 1.0 - std::abs(n);
-        n = n * n;
-        return n;
-    }
-};
-
-// Initialize noise generators with different seeds
-PerlinNoise continentalNoise(1);
-PerlinNoise elevationNoise(2);
-PerlinNoise ridgeNoise(3);
-
-struct TerrainPoint {
-    double height;
-    bool isLand;
-};
-
-TerrainPoint getTerrainHeight(double x, double z) {
-    const double CONTINENTAL_SCALE = 100.0;
-    const double ELEVATION_SCALE = 50.0;
-    const double RIDGE_SCALE = 25.0;
-
-    double continental = continentalNoise.noise(x / CONTINENTAL_SCALE, 0, z / CONTINENTAL_SCALE);
-    continental = (continental + 1.0) / 2.0;
-
-    bool isLand = continental > 0.48;  // Slightly lower threshold for more land
-
-    if (!isLand) {
-        return { -4.0, false };
-    }
-
-    double elevation = elevationNoise.noise(x / ELEVATION_SCALE, 0, z / ELEVATION_SCALE);
-    elevation = (elevation + 1.0) / 2.0;
-
-    double ridge = ridgeNoise.ridgeNoise(x / RIDGE_SCALE, 0, z / RIDGE_SCALE);
-
-    double height = elevation * 8.0;  // Base height
-    height += ridge * 12.0;  // Add mountains
-
-    return { height, true };
-}
-
-struct ChunkPos {
-    int x, z;
-    bool operator==(const ChunkPos& other) const {
-        return x == other.x && z == other.z;
-    }
-};
-
-namespace std {
-    template<>
-    struct hash<ChunkPos> {
-        size_t operator()(const ChunkPos& k) const {
-            return hash<int>()(k.x) ^ (hash<int>()(k.z) << 1);
+    ~MirrorDaw() {
+        if (client) {
+            jack_client_close(client);
         }
-    };
-}
-
-struct Chunk {
-    std::vector<glm::vec3> waterPositions;
-    std::vector<glm::vec3> stonePositions;
-    bool needsMeshUpdate;
-
-    Chunk() : needsMeshUpdate(true) {}
-};
-
-std::unordered_map<ChunkPos, Chunk> chunks;
-
-void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}
-
-void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
-    float xpos = static_cast<float>(xposIn);
-    float ypos = static_cast<float>(yposIn);
-
-    if (firstMouse) {
-        lastX = xpos;
-        lastY = ypos;
-        firstMouse = false;
     }
 
-    float xoffset = xpos - lastX;
-    float yoffset = lastY - ypos;
-    lastX = xpos;
-    lastY = ypos;
+    void record_track(int track_number, const std::string& role) {
+        if (std::find(valid_roles.begin(), valid_roles.end(), role) == valid_roles.end()) {
+            throw std::runtime_error("Invalid role: " + role);
+        }
 
-    const float sensitivity = 0.1f;
-    xoffset *= sensitivity;
-    yoffset *= sensitivity;
+        std::string filename = tracks_dir + "/track_" + std::to_string(track_number) + "_" + role + ".wav";
 
-    yaw += xoffset;
-    pitch += yoffset;
+        current_recording.clear();
+        is_recording = true;
+        std::cout << "Recording Track " << track_number << " as role '" << role << "'..." << std::endl;
+        std::cout << "Press Enter to stop recording..." << std::endl;
+        std::cin.get();
+        is_recording = false;
 
-    pitch = std::min(pitch, 89.0f);
-    pitch = std::max(pitch, -89.0f);
+        Track new_track;
+        new_track.filename = filename;
+        new_track.role = role;
+        new_track.data = current_recording;
+        tracks.push_back(new_track);
 
-    glm::vec3 front;
-    front.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
-    front.y = sin(glm::radians(pitch));
-    front.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
-    cameraFront = glm::normalize(front);
-} // || BREAK |>
-void processInput(GLFWwindow* window) {
-    const float cameraSpeed = 20.0f * deltaTime;  // Increased for better terrain viewing
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        cameraPos += cameraSpeed * cameraFront;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        cameraPos -= cameraSpeed * cameraFront;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
-        cameraPos += cameraSpeed * cameraUp;
-    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
-        cameraPos -= cameraSpeed * cameraUp;
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
-}
+        save_track_to_wav(filename, current_recording);
+        std::cout << "Track " << track_number << " saved as " << filename << std::endl;
+    }
 
-void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
-    if (!chunk.needsMeshUpdate) return;
+    void mix_tracks_to_stems() {
+        std::map<std::string, std::vector<float>> role_buffers;
 
-    chunk.waterPositions.clear();
-    chunk.stonePositions.clear();
+        for (const auto& role : valid_roles) {
+            role_buffers[role] = std::vector<float>();
+        }
 
-    for (int x = 0; x < CHUNK_SIZE; x++) {
-        for (int z = 0; z < CHUNK_SIZE; z++) {
-            double worldX = chunkX * CHUNK_SIZE + x;
-            double worldZ = chunkZ * CHUNK_SIZE + z;
+        size_t max_length = 0;
+        for (const auto& track : tracks) {
+            max_length = (track.data.size() > max_length) ? track.data.size() : max_length;
+        }
 
-            TerrainPoint terrain = getTerrainHeight(worldX, worldZ);
+        for (auto& buffer : role_buffers) {
+            buffer.second.resize(max_length, 0.0f);
+        }
 
-            // Water at y=0 if not land
-            if (!terrain.isLand) {
-                chunk.waterPositions.push_back(glm::vec3(worldX, 0.0f, worldZ));
-            }
-
-            // Generate stone columns
-            int height = static_cast<int>(std::floor(terrain.height));
-            for (int y = height; y >= -4; y--) {
-                chunk.stonePositions.push_back(glm::vec3(worldX, y, worldZ));
+        for (const auto& track : tracks) {
+            auto& role_buffer = role_buffers[track.role];
+            for (size_t i = 0; i < track.data.size(); i++) {
+                role_buffer[i] += track.data[i];
             }
         }
-    }
 
-    chunk.needsMeshUpdate = false;
-}
-
-void updateChunks() {
-    int playerChunkX = static_cast<int>(floor(cameraPos.x / CHUNK_SIZE));
-    int playerChunkZ = static_cast<int>(floor(cameraPos.z / CHUNK_SIZE));
-    int renderDistance = static_cast<int>(RENDER_DISTANCE);
-
-    // Remove far chunks
-    for (auto it = chunks.begin(); it != chunks.end();) {
-        int dx = abs(it->first.x - playerChunkX);
-        int dz = abs(it->first.z - playerChunkZ);
-        if (dx > renderDistance || dz > renderDistance) {
-            it = chunks.erase(it);
-        }
-        else {
-            ++it;
+        for (const auto& role : valid_roles) {
+            std::string stem_filename = tracks_dir + "/stem_" + role + ".wav";
+            save_track_to_wav(stem_filename, role_buffers[role]);
+            std::cout << "Exported stem: " << stem_filename << std::endl;
         }
     }
 
-    // Add or update nearby chunks
-    for (int x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
-        for (int z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
-            ChunkPos pos{ x, z };
-            if (chunks.find(pos) == chunks.end()) {
-                chunks[pos] = Chunk();
+    void play_master() {
+        // Load all stems
+        playback_buffers.clear();
+        for (const auto& role : valid_roles) {
+            std::string stem_filename = tracks_dir + "/stem_" + role + ".wav";
+            std::vector<float> data;
+
+            std::ifstream file(stem_filename, std::ios::binary);
+            if (!file) {
+                std::cout << "Warning: Could not find stem for " << role << std::endl;
+                // Create empty buffer if stem doesn't exist
+                playback_buffers[role] = std::vector<float>();
+                continue;
             }
-            generateChunkMesh(chunks[pos], x, z);
+
+            // Skip WAV header
+            file.seekg(44); // Standard WAV header size
+
+            // Read the data
+            while (file) {
+                float sample;
+                file.read(reinterpret_cast<char*>(&sample), sizeof(float));
+                if (file) {
+                    data.push_back(sample);
+                }
+            }
+            playback_buffers[role] = data;
         }
+
+        // Ensure all buffers are the same length
+        size_t max_length = 0;
+        for (const auto& buffer : playback_buffers) {
+            max_length = (buffer.second.size() > max_length) ? buffer.second.size() : max_length;
+        }
+        for (auto& buffer : playback_buffers) {
+            buffer.second.resize(max_length, 0.0f);
+        }
+
+        // Start playback
+        playback_position = 0;
+        is_playing = true;
+        std::cout << "Playing master mix... Press Enter to stop." << std::endl;
+        std::cin.get();
+        is_playing = false;
     }
-}
+};
 
 int main() {
-    if (!glfwInit()) {
-        std::cout << "Failed to initialize GLFW\n";
-        return -1;
-    }
+    try {
+        MirrorDaw daw;
+        std::cout << "MirrorDaw initialized. Available commands:" << std::endl;
+        std::cout << "1. Record track" << std::endl;
+        std::cout << "2. Mix to stems" << std::endl;
+        std::cout << "3. Exit" << std::endl;
+        std::cout << "4. Play master mix" << std::endl;
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        while (true) {
+            std::cout << "\nEnter command (1-4): ";
+            int choice;
+            std::cin >> choice;
+            std::cin.ignore();
 
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Minecraft Clone", nullptr, nullptr);
-    if (!window) {
-        std::cout << "Failed to create GLFW window\n";
-        glfwTerminate();
-        return -1;
-    }
-
-    glfwMakeContextCurrent(window);
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
-    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
-    glfwSetCursorPosCallback(window, mouse_callback);
-
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cout << "Failed to initialize GLAD\n";
-        return -1;
-    } // || BREAK |>
-    const char* vertexShaderSource = R"(
-       #version 330 core
-       layout (location = 0) in vec3 aPos;
-       layout (location = 1) in vec3 aColor;
-       layout (location = 2) in vec3 aOffset;
-       out vec3 ourColor;
-       uniform mat4 model;
-       uniform mat4 view;
-       uniform mat4 projection;
-       uniform bool isWater;
-       void main() {
-           vec3 pos = aPos;
-           if (gl_InstanceID > 0) {
-               pos += aOffset;
-           }
-           gl_Position = projection * view * model * vec4(pos, 1.0);
-           ourColor = isWater ? vec3(0.0, 0.0, 1.0) : aColor;
-       }
-   )";
-
-    const char* fragmentShaderSource = R"(
-       #version 330 core
-       in vec3 ourColor;
-       out vec4 FragColor;
-       uniform bool isWater;
-       void main() {
-           float alpha = isWater ? 0.5 : 1.0;
-           FragColor = vec4(ourColor, alpha);
-       }
-   )";
-
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-
-    unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-
-    float vertices[] = {
-        -0.5f, -0.5f,  0.5f,  0.5f, 0.5f, 0.5f,
-         0.5f, -0.5f,  0.5f,  0.5f, 0.5f, 0.5f,
-         0.5f,  0.5f,  0.5f,  0.5f, 0.5f, 0.5f,
-        -0.5f,  0.5f,  0.5f,  0.5f, 0.5f, 0.5f,
-        -0.5f, -0.5f, -0.5f,  0.5f, 0.5f, 0.5f,
-         0.5f, -0.5f, -0.5f,  0.5f, 0.5f, 0.5f,
-         0.5f,  0.5f, -0.5f,  0.5f, 0.5f, 0.5f,
-        -0.5f,  0.5f, -0.5f,  0.5f, 0.5f, 0.5f,
-    };
-
-    // Red vertices for origin cube
-    float redVertices[] = {
-        -0.5f, -0.5f,  0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f, -0.5f,  0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.0f,
-        -0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.0f,
-        -0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-         0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-        -0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,
-    }; // || BREAK |>
-    unsigned int indices[] = {
-       0, 1, 2,  2, 3, 0,
-       1, 5, 6,  6, 2, 1,
-       5, 4, 7,  7, 6, 5,
-       4, 0, 3,  3, 7, 4,
-       3, 2, 6,  6, 7, 3,
-       4, 5, 1,  1, 0, 4
-    };
-
-    unsigned int VAO, redVAO, VBO, redVBO, waterVAO, stoneVAO, EBO, instanceVBO;
-    glGenVertexArrays(1, &VAO);
-    glGenVertexArrays(1, &redVAO);
-    glGenVertexArrays(1, &waterVAO);
-    glGenVertexArrays(1, &stoneVAO);
-    glGenBuffers(1, &VBO);
-    glGenBuffers(1, &redVBO);
-    glGenBuffers(1, &EBO);
-    glGenBuffers(1, &instanceVBO);
-
-    // Setup regular VAO
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-    // Setup red cube VAO
-    glBindVertexArray(redVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, redVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(redVertices), redVertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-
-    // Setup water and stone VAOs with instancing
-    glBindVertexArray(waterVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    glBindVertexArray(stoneVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    glEnable(GL_DEPTH_TEST);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA); // || BREAK |>
-    while (!glfwWindowShouldClose(window)) {
-        float currentFrame = static_cast<float>(glfwGetTime());
-        deltaTime = currentFrame - lastFrame;
-        lastFrame = currentFrame;
-
-        processInput(window);
-        updateChunks();
-
-        glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-        glUseProgram(shaderProgram);
-
-        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f),
-            static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT), 0.1f, 1000.0f);
-
-        // Draw stone first
-        glUniform1i(glGetUniformLocation(shaderProgram, "isWater"), 0);
-        glm::mat4 model = glm::mat4(1.0f);
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-        glBindVertexArray(stoneVAO);
-        for (const auto& chunk : chunks) {
-            if (!chunk.second.stonePositions.empty()) {
-                glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-                glBufferData(GL_ARRAY_BUFFER, chunk.second.stonePositions.size() * sizeof(glm::vec3),
-                    chunk.second.stonePositions.data(), GL_DYNAMIC_DRAW);
-                glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0,
-                    static_cast<GLsizei>(chunk.second.stonePositions.size()));
+            if (choice == 1) {
+                int track_number;
+                std::string role;
+                std::cout << "Enter track number: ";
+                std::cin >> track_number;
+                std::cin.ignore();
+                std::cout << "Enter role (left/front_fill/sub/right): ";
+                std::getline(std::cin, role);
+                daw.record_track(track_number, role);
+            }
+            else if (choice == 2) {
+                daw.mix_tracks_to_stems();
+            }
+            else if (choice == 3) {
+                break;
+            }
+            else if (choice == 4) {
+                daw.play_master();
             }
         }
-
-        // Draw red origin cube at y=1
-        glUniform1i(glGetUniformLocation(shaderProgram, "isWater"), 0);
-        model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glBindVertexArray(redVAO);
-        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
-
-        // Draw water last for transparency
-        glUniform1i(glGetUniformLocation(shaderProgram, "isWater"), 1);
-        model = glm::mat4(1.0f);
-        glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-        glBindVertexArray(waterVAO);
-        for (const auto& chunk : chunks) {
-            if (!chunk.second.waterPositions.empty()) {
-                glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-                glBufferData(GL_ARRAY_BUFFER, chunk.second.waterPositions.size() * sizeof(glm::vec3),
-                    chunk.second.waterPositions.data(), GL_DYNAMIC_DRAW);
-                glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0,
-                    static_cast<GLsizei>(chunk.second.waterPositions.size()));
-            }
-        }
-
-        glfwSwapBuffers(window);
-        glfwPollEvents();
     }
-
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteVertexArrays(1, &redVAO);
-    glDeleteVertexArrays(1, &waterVAO);
-    glDeleteVertexArrays(1, &stoneVAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &redVBO);
-    glDeleteBuffers(1, &EBO);
-    glDeleteBuffers(1, &instanceVBO);
-    glDeleteProgram(shaderProgram);
-
-    glfwTerminate();
+    catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl;
+        return 1;
+    }
     return 0;
-} // ##!!
+}
