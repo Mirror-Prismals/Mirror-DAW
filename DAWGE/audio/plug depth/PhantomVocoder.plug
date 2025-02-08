@@ -1,0 +1,271 @@
+// PhantomVocoder.cpp
+// A simple stereo vocoder plugin using JACK and standard C++.
+// It splits the modulator and carrier signals into eight frequency bands using bandpass filters,
+// computes an envelope for each modulator band, applies that envelope to the corresponding carrier band,
+// and sums the results to form the vocoded output. A mix parameter blends the vocoded signal with the dry carrier.
+//
+// Real-time adjustable parameters (via console):
+//   - Attack Time (ms): for the envelope follower (e.g., 10 ms)
+//   - Release Time (ms): for the envelope follower (e.g., 50 ms)
+//   - Mix (0.0 = dry carrier only, 1.0 = fully vocoded)
+// 
+// The bandpass filters are fixed in this example with preset center frequencies and a fixed Q.
+// Compile with:
+//   g++ -std=c++11 PhantomVocoder.cpp -ljack -lpthread -o PhantomVocoder
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#include <jack/jack.h>
+#include <iostream>
+#include <vector>
+#include <atomic>
+#include <thread>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
+#include <cmath>
+#include <chrono>
+#include <string>
+
+using namespace std;
+
+// ---------------------------
+// Biquad filter for bandpass
+class Biquad {
+public:
+    float b0, b1, b2, a1, a2;
+    float x1, x2, y1, y2;
+    Biquad() : b0(0), b1(0), b2(0), a1(0), a2(0),
+        x1(0), x2(0), y1(0), y2(0) {
+    }
+};
+
+// Update a Biquad filter for a bandpass filter using RBJ’s formulas.
+// f0: center frequency, Q: quality factor, fs: sample rate.
+void updateBandpass(Biquad& bq, float f0, float Q, int fs) {
+    float w0 = 2.0f * M_PI * f0 / fs;
+    float cosw0 = cosf(w0);
+    float sinw0 = sinf(w0);
+    float alpha = sinw0 / (2.0f * Q);
+    // For a bandpass filter with constant skirt gain (peak gain = Q):
+    float b0 = alpha;
+    float b1 = 0.0f;
+    float b2 = -alpha;
+    float a0 = 1.0f + alpha;
+    float a1 = -2.0f * cosw0;
+    float a2 = 1.0f - alpha;
+    bq.b0 = b0 / a0;
+    bq.b1 = b1 / a0;
+    bq.b2 = b2 / a0;
+    bq.a1 = a1 / a0;
+    bq.a2 = a2 / a0;
+    // Reset filter state.
+    bq.x1 = bq.x2 = bq.y1 = bq.y2 = 0.0f;
+}
+
+// Process a single sample through a Biquad filter.
+float processBiquad(Biquad& bq, float x) {
+    float y = bq.b0 * x + bq.b1 * bq.x1 + bq.b2 * bq.x2 - bq.a1 * bq.y1 - bq.a2 * bq.y2;
+    bq.x2 = bq.x1;
+    bq.x1 = x;
+    bq.y2 = bq.y1;
+    bq.y1 = y;
+    return y;
+}
+
+// ---------------------------
+// PhantomVocoder class.
+class PhantomVocoder {
+private:
+    jack_client_t* client;
+    // Two input ports: modulator and carrier.
+    jack_port_t* mod_in_port;
+    jack_port_t* car_in_port;
+    // One output port (mono output).
+    jack_port_t* out_port;
+    int sample_rate;
+
+    atomic<bool> running;
+    thread control_thread;
+    mutex print_mutex;
+
+    // Vocoder parameters (global).
+    atomic<float> attackTime;    // in ms (e.g., 10 ms)
+    atomic<float> releaseTime;   // in ms (e.g., 50 ms)
+    atomic<float> mix;           // dry/wet mix: 0.0 = dry carrier only, 1.0 = fully vocoded
+
+    // Number of bands for vocoding.
+    static const int NUM_BANDS = 8;
+    // Preset center frequencies for the bands (in Hz).
+    const float centerFrequencies[NUM_BANDS] = { 200.0f, 400.0f, 800.0f, 1600.0f, 3200.0f, 6400.0f, 10000.0f, 15000.0f };
+    // Fixed Q for all bands.
+    const float bandQ = 2.0f;
+
+    // Filter banks: one Biquad per band for the modulator and one for the carrier.
+    vector<Biquad> modFilters;
+    vector<Biquad> carFilters;
+    // Envelope for each band (one per band).
+    vector<float> envelopes;
+
+    // JACK process callback.
+    static int process_callback(jack_nframes_t nframes, void* arg) {
+        PhantomVocoder* voc = static_cast<PhantomVocoder*>(arg);
+        float* modIn = static_cast<float*>(jack_port_get_buffer(voc->mod_in_port, nframes));
+        float* carIn = static_cast<float*>(jack_port_get_buffer(voc->car_in_port, nframes));
+        float* out = static_cast<float*>(jack_port_get_buffer(voc->out_port, nframes));
+
+        float att = voc->attackTime.load();
+        float rel = voc->releaseTime.load();
+        float mixVal = voc->mix.load();
+        // Compute dt in ms per sample.
+        float dt_ms = 1000.0f / voc->sample_rate;
+        float attCoeff = expf(-dt_ms / att);
+        float relCoeff = expf(-dt_ms / rel);
+
+        float outputSample;
+        // Process each sample.
+        for (jack_nframes_t i = 0; i < nframes; i++) {
+            // Get one sample from each input.
+            float modSample = modIn[i];
+            float carSample = carIn[i];
+            float bandSum = 0.0f;
+            // Process each band.
+            for (int b = 0; b < NUM_BANDS; b++) {
+                // Update the bandpass filters' coefficients (in case sample_rate changed, though it is fixed here).
+                updateBandpass(voc->modFilters[b], voc->centerFrequencies[b], voc->bandQ, voc->sample_rate);
+                updateBandpass(voc->carFilters[b], voc->centerFrequencies[b], voc->bandQ, voc->sample_rate);
+                // Process modulator and carrier signals through the respective bandpass filters.
+                float modOut = processBiquad(voc->modFilters[b], modSample);
+                float carOut = processBiquad(voc->carFilters[b], carSample);
+                // Compute envelope for this band.
+                float absMod = fabs(modOut);
+                if (absMod > voc->envelopes[b])
+                    voc->envelopes[b] = attCoeff * voc->envelopes[b] + (1.0f - attCoeff) * absMod;
+                else
+                    voc->envelopes[b] = relCoeff * voc->envelopes[b] + (1.0f - relCoeff) * absMod;
+                // Multiply the carrier band by the envelope.
+                bandSum += voc->envelopes[b] * carOut;
+            }
+            // Optionally, blend the vocoded signal with the dry carrier.
+            outputSample = mixVal * bandSum + (1.0f - mixVal) * carSample;
+            out[i] = outputSample;
+        }
+        return 0;
+    }
+
+    // Control thread: updates global vocoder parameters.
+    void control_loop() {
+        string line;
+        while (running.load()) {
+            {
+                lock_guard<mutex> lock(print_mutex);
+                cout << "\n[PhantomVocoder] Enter parameters:" << endl;
+                cout << "Format: <Attack_ms> <Release_ms> <Mix (0.0-1.0)>" << endl;
+                cout << "For example: \"10 50 1.0\" (10 ms attack, 50 ms release, fully vocoded) or 'q' to quit: ";
+            }
+            if (!getline(cin, line))
+                break;
+            if (line == "q" || line == "Q") {
+                running.store(false);
+                break;
+            }
+            istringstream iss(line);
+            float newAttack, newRelease, newMix;
+            if (!(iss >> newAttack >> newRelease >> newMix)) {
+                lock_guard<mutex> lock(print_mutex);
+                cout << "[PhantomVocoder] Invalid input. Please try again." << endl;
+                continue;
+            }
+            if (newAttack < 1.0f) newAttack = 1.0f;
+            if (newRelease < 1.0f) newRelease = 1.0f;
+            if (newMix < 0.0f) newMix = 0.0f;
+            if (newMix > 1.0f) newMix = 1.0f;
+            attackTime.store(newAttack);
+            releaseTime.store(newRelease);
+            mix.store(newMix);
+            {
+                lock_guard<mutex> lock(print_mutex);
+                cout << "[PhantomVocoder] Updated parameters:" << endl;
+                cout << "  Attack = " << newAttack << " ms, Release = " << newRelease << " ms" << endl;
+                cout << "  Mix = " << newMix << endl;
+            }
+        }
+    }
+
+public:
+    PhantomVocoder(const char* client_name = "PhantomVocoder")
+        : client(nullptr), running(true), attackTime(10.0f), releaseTime(50.0f), mix(1.0f)
+    {
+        // Initialize filter banks and envelopes.
+        modFilters.resize(NUM_BANDS);
+        carFilters.resize(NUM_BANDS);
+        envelopes.resize(NUM_BANDS, 0.0f);
+        for (int i = 0; i < NUM_BANDS; i++) {
+            // Initialize filters with the given center frequency and Q.
+            updateBandpass(modFilters[i], centerFrequencies[i], bandQ, 44100);
+            updateBandpass(carFilters[i], centerFrequencies[i], bandQ, 44100);
+            envelopes[i] = 0.0f;
+        }
+
+        jack_status_t status;
+        client = jack_client_open(client_name, JackNullOption, &status);
+        if (!client) {
+            throw runtime_error("PhantomVocoder: Failed to open JACK client");
+        }
+        sample_rate = jack_get_sample_rate(client);
+
+        // Register two input ports: one for modulator, one for carrier.
+        mod_in_port = jack_port_register(client, "modulator", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        car_in_port = jack_port_register(client, "carrier", JACK_DEFAULT_AUDIO_TYPE, JackPortIsInput, 0);
+        // Register one mono output port.
+        out_port = jack_port_register(client, "out", JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
+        if (!mod_in_port || !car_in_port || !out_port) {
+            jack_client_close(client);
+            throw runtime_error("PhantomVocoder: Failed to register JACK ports");
+        }
+        if (jack_set_process_callback(client, process_callback, this) != 0) {
+            jack_client_close(client);
+            throw runtime_error("PhantomVocoder: Failed to set process callback");
+        }
+        if (jack_activate(client) != 0) {
+            jack_client_close(client);
+            throw runtime_error("PhantomVocoder: Failed to activate JACK client");
+        }
+        control_thread = thread(&PhantomVocoder::control_loop, this);
+
+        lock_guard<mutex> lock(print_mutex);
+        cout << "[PhantomVocoder] Initialized. Sample rate: " << sample_rate << " Hz" << endl;
+        cout << "[PhantomVocoder] Default parameters: Attack = " << attackTime.load() << " ms, Release = " << releaseTime.load() << " ms, Mix = " << mix.load() << endl;
+        cout << "Connect your modulator signal to the 'modulator' port and your carrier signal to the 'carrier' port." << endl;
+    }
+
+    ~PhantomVocoder() {
+        running.store(false);
+        if (control_thread.joinable())
+            control_thread.join();
+        if (client)
+            jack_client_close(client);
+    }
+
+    void run() {
+        cout << "[PhantomVocoder] Running. Type 'q' in the control console to quit." << endl;
+        while (running.load()) {
+            this_thread::sleep_for(chrono::milliseconds(100));
+        }
+        cout << "[PhantomVocoder] Shutting down." << endl;
+    }
+};
+
+int main() {
+    try {
+        PhantomVocoder vocoder;
+        vocoder.run();
+    }
+    catch (const exception& e) {
+        cerr << "[PhantomVocoder] Error: " << e.what() << endl;
+        return 1;
+    }
+    return 0;
+}
