@@ -5,7 +5,7 @@
 // epsilon tolerance in the raycast, and with an outline drawing pass that
 // temporarily disables depth testing. Also, an outline of how to integrate
 // separate textures per block type with tinting is provided.
-// 
+//
 // NEW: Instead of using textures, each block face is rendered with a
 //      “pixelated” 24×24 grid overlay. The vertex data now includes per–face
 //      UV coordinates and the fragment shader uses nearest–neighbor style
@@ -30,7 +30,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 32.0f; // For testing, reduced render distance.
+const float RENDER_DISTANCE = 100.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -89,7 +89,10 @@ struct ivec3_hash {
     }
 };
 
-// Global block modifications: key is a block position, value indicates modification type (-1 = removed, 0 = placed)
+// Global block modifications: key is a block position, value indicates modification:
+//   -1 = removal, any nonnegative value indicates the block type to place:
+// 0 = Stone, 1 = Water, 2 = Tree trunk, 3 = Pine tree leaves,
+// 5 = Water lily, 6 = Fallen log, 7 = Fir tree leaves.
 std::unordered_map<glm::ivec3, int, ivec3_hash> blockModifications;
 
 // Global chunk storage
@@ -291,9 +294,17 @@ std::vector<glm::vec3> generateFirCanopy(int groundHeight, int trunkHeight, int 
 
 // ==================== Raycasting ====================
 // Modified: now checks if the candidate block exists in any block array in its chunk,
-// in addition to the terrain test, and uses a larger epsilon (0.5f) for the comparisons.
+// using a slightly larger tolerance for logs and leaves so they can be mined.
+// Also, when placing a block, an adjacent position is returned.
 glm::ivec3 raycastForBlock(bool place) {
     float t = 0.0f;
+    // Tolerances for various block types:
+    float stoneTol = 0.5f;
+    float trunkTol = 0.5f;
+    float leafTol = 0.6f;
+    float waterTol = 0.5f;
+    float lilyTol = 0.5f;
+    float fallenTol = 0.5f;
     while (t < 5.0f) {
         glm::vec3 p = cameraPos + t * cameraFront;
         glm::ivec3 candidate = glm::ivec3(std::round(p.x), std::round(p.y), std::round(p.z));
@@ -310,38 +321,38 @@ glm::ivec3 raycastForBlock(bool place) {
         ChunkPos cp{ chunkX, chunkZ };
         if (chunks.find(cp) != chunks.end()) {
             Chunk& ch = chunks[cp];
-            // Use a larger epsilon tolerance (0.5f) for logs and leaves.
+            // Check stone blocks
             for (const auto& pos : ch.stonePositions) {
-                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
             }
             if (!exists) {
                 for (const auto& pos : ch.treeTrunkPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), trunkTol))) { exists = true; break; }
                 }
             }
             if (!exists) {
                 for (const auto& pos : ch.treeLeafPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafTol))) { exists = true; break; }
                 }
             }
             if (!exists) {
                 for (const auto& pos : ch.firLeafPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafTol))) { exists = true; break; }
                 }
             }
             if (!exists) {
                 for (const auto& pos : ch.waterPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), waterTol))) { exists = true; break; }
                 }
             }
             if (!exists) {
                 for (const auto& pos : ch.waterLilyPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), lilyTol))) { exists = true; break; }
                 }
             }
             if (!exists) {
                 for (const auto& pos : ch.fallenTreeTrunkPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), fallenTol))) { exists = true; break; }
                 }
             }
         }
@@ -371,6 +382,8 @@ glm::ivec3 raycastForBlock(bool place) {
 
 // ==================== Mouse Button Callback ====================
 // Modified: after modifying a block, mark the corresponding chunk as needing an update.
+// For right–click (placement), the block type is determined from the block you’re looking at,
+// so that the placed block is the same type (instead of always stone).
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
     if (action == GLFW_PRESS) {
         if (button == GLFW_MOUSE_BUTTON_LEFT) {
@@ -385,14 +398,47 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
             }
         }
         else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
-            glm::ivec3 pos = raycastForBlock(true);
-            if (pos.x != -10000) {
-                blockModifications[pos] = 0;
-                int chunkX = static_cast<int>(std::floor(pos.x / static_cast<float>(CHUNK_SIZE)));
-                int chunkZ = static_cast<int>(std::floor(pos.z / static_cast<float>(CHUNK_SIZE)));
+            // Determine the block you’re highlighting.
+            glm::ivec3 hitBlock = raycastForBlock(false);
+            if (hitBlock.x != -10000) {
+                int chunkX = static_cast<int>(std::floor(hitBlock.x / static_cast<float>(CHUNK_SIZE)));
+                int chunkZ = static_cast<int>(std::floor(hitBlock.z / static_cast<float>(CHUNK_SIZE)));
                 ChunkPos cp{ chunkX, chunkZ };
-                if (chunks.find(cp) != chunks.end())
-                    chunks[cp].needsMeshUpdate = true;
+                int blockTypeToPlace = 0; // default to stone
+                if (chunks.find(cp) != chunks.end()) {
+                    Chunk& ch = chunks[cp];
+                    auto within = [&](const std::vector<glm::vec3>& vec, float tol) -> bool {
+                        for (const auto& v : vec) {
+                            if (glm::all(glm::epsilonEqual(v, glm::vec3(hitBlock), tol)))
+                                return true;
+                        }
+                        return false;
+                    };
+                    if (within(ch.treeTrunkPositions, 0.5f))
+                        blockTypeToPlace = 2;
+                    else if (within(ch.treeLeafPositions, 0.6f))
+                        blockTypeToPlace = 3;
+                    else if (within(ch.firLeafPositions, 0.6f))
+                        blockTypeToPlace = 7;
+                    else if (within(ch.waterPositions, 0.5f))
+                        blockTypeToPlace = 1;
+                    else if (within(ch.waterLilyPositions, 0.5f))
+                        blockTypeToPlace = 5;
+                    else if (within(ch.fallenTreeTrunkPositions, 0.5f))
+                        blockTypeToPlace = 6;
+                    else
+                        blockTypeToPlace = 0;
+                }
+                // Get the placement position (adjacent to the highlighted block)
+                glm::ivec3 pos = raycastForBlock(true);
+                if (pos.x != -10000) {
+                    blockModifications[pos] = blockTypeToPlace;
+                    int placeChunkX = static_cast<int>(std::floor(pos.x / static_cast<float>(CHUNK_SIZE)));
+                    int placeChunkZ = static_cast<int>(std::floor(pos.z / static_cast<float>(CHUNK_SIZE)));
+                    ChunkPos cp2{ placeChunkX, placeChunkZ };
+                    if (chunks.find(cp2) != chunks.end())
+                        chunks[cp2].needsMeshUpdate = true;
+                }
             }
         }
     }
@@ -610,32 +656,53 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
             }
         }
     }
-    // Apply block modifications for stone blocks.
+    // Apply block modifications for all block types.
     for (const auto& mod : blockModifications) {
         glm::ivec3 pos = mod.first;
         int modType = mod.second;
         if (pos.x >= chunkX * CHUNK_SIZE && pos.x < (chunkX + 1) * CHUNK_SIZE &&
             pos.z >= chunkZ * CHUNK_SIZE && pos.z < (chunkZ + 1) * CHUNK_SIZE) {
-            if (modType == -1) {
-                auto& stones = chunk.stonePositions;
-                stones.erase(std::remove_if(stones.begin(), stones.end(), [&](const glm::vec3& v) {
+            auto removeBlock = [&](std::vector<glm::vec3>& vec) {
+                vec.erase(std::remove_if(vec.begin(), vec.end(), [&](const glm::vec3& v) {
                     return std::abs(v.x - pos.x) < 0.1f &&
-                        std::abs(v.y - pos.y) < 0.1f &&
-                        std::abs(v.z - pos.z) < 0.1f;
-                    }), stones.end());
+                           std::abs(v.y - pos.y) < 0.1f &&
+                           std::abs(v.z - pos.z) < 0.1f;
+                }), vec.end());
+            };
+            if (modType == -1) {
+                removeBlock(chunk.stonePositions);
+                removeBlock(chunk.treeTrunkPositions);
+                removeBlock(chunk.treeLeafPositions);
+                removeBlock(chunk.firLeafPositions);
+                removeBlock(chunk.waterPositions);
+                removeBlock(chunk.waterLilyPositions);
+                removeBlock(chunk.fallenTreeTrunkPositions);
             }
             else {
-                bool exists = false;
-                for (const auto& v : chunk.stonePositions) {
-                    if (std::abs(v.x - pos.x) < 0.1f &&
-                        std::abs(v.y - pos.y) < 0.1f &&
-                        std::abs(v.z - pos.z) < 0.1f) {
-                        exists = true;
-                        break;
+                auto existsIn = [&](const std::vector<glm::vec3>& vec) -> bool {
+                    for (const auto& v : vec) {
+                        if (std::abs(v.x - pos.x) < 0.1f &&
+                            std::abs(v.y - pos.y) < 0.1f &&
+                            std::abs(v.z - pos.z) < 0.1f)
+                            return true;
+                    }
+                    return false;
+                };
+                if (!existsIn(chunk.stonePositions) && !existsIn(chunk.treeTrunkPositions) &&
+                    !existsIn(chunk.treeLeafPositions) && !existsIn(chunk.firLeafPositions) &&
+                    !existsIn(chunk.waterPositions) && !existsIn(chunk.waterLilyPositions) &&
+                    !existsIn(chunk.fallenTreeTrunkPositions)) {
+                    switch (modType) {
+                        case 0: chunk.stonePositions.push_back(glm::vec3(pos)); break;
+                        case 1: chunk.waterPositions.push_back(glm::vec3(pos)); break;
+                        case 2: chunk.treeTrunkPositions.push_back(glm::vec3(pos)); break;
+                        case 3: chunk.treeLeafPositions.push_back(glm::vec3(pos)); break;
+                        case 5: chunk.waterLilyPositions.push_back(glm::vec3(pos)); break;
+                        case 6: chunk.fallenTreeTrunkPositions.push_back(glm::vec3(pos)); break;
+                        case 7: chunk.firLeafPositions.push_back(glm::vec3(pos)); break;
+                        default: chunk.stonePositions.push_back(glm::vec3(pos)); break;
                     }
                 }
-                if (!exists)
-                    chunk.stonePositions.push_back(glm::vec3(pos));
             }
         }
     }
@@ -878,7 +945,7 @@ int main() {
             glEnableVertexAttribArray(2);
             glVertexAttribDivisor(2, 1);
         }
-        };
+    };
 
     setupVAO(VAO, false);         // for the origin cube
     setupVAO(redVAO, false);      // for the outline cube
@@ -916,14 +983,15 @@ int main() {
 
         // Set uniform blockColors (8 entries)
         glm::vec3 blockColors[8];
-        blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (grid effect will show 24×24 pattern)
+        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f);    // Stone (grid effect will show 24×24 pattern)
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);       // Water
-        blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);    // Tree trunk (wood)
+        // blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);
+        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Tree trunk (wood)
         blockColors[3] = glm::vec3(0.5f, 0.5f, 0.0f);       // Pine tree leaves
         blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);       // Origin cube
         blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);       // Water lily
         blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);    // Fallen log
-        blockColors[7] = glm::vec3(0.0f, 0.8f, 0.0f);       // Fir tree leaves
+        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);       // Fir tree leaves
         glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 8, glm::value_ptr(blockColors[0]));
 
         // Build a quadtree over loaded chunks.
@@ -970,7 +1038,7 @@ int main() {
             glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
-            };
+        };
 
         drawInstances(stoneVAO, 0, globalStoneInstances);
         // Draw the origin cube.
