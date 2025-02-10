@@ -5,6 +5,11 @@
 // epsilon tolerance in the raycast, and with an outline drawing pass that
 // temporarily disables depth testing. Also, an outline of how to integrate
 // separate textures per block type with tinting is provided.
+// 
+// NEW: Instead of using textures, each block face is rendered with a
+//      “pixelated” 24×24 grid overlay. The vertex data now includes per–face
+//      UV coordinates and the fragment shader uses nearest–neighbor style
+//      quantization (with grid lines) so you can see that each block is 24×24.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -25,7 +30,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 100.0f; // For testing, reduced render distance.
+const float RENDER_DISTANCE = 32.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -707,48 +712,18 @@ void processInput(GLFWwindow* window) {
 
 // ==================== VIEW (Rendering) ====================
 //
-// Note: To use textures, you would add texture coordinates to your vertex data
-// and modify your shaders to sample from individual textures (loaded from separate
-// files) and then tint them with the blockColors uniform.
-// (Below is an example of how your shader code might be modified.)
-// Vertex shader would need an extra attribute for TexCoord and pass it to the fragment shader.
-// Fragment shader example:
-//
-// #version 330 core
-// in vec3 ourColor;
-// in vec2 TexCoord;
-// out vec4 FragColor;
-// uniform int blockType;
-// uniform sampler2D stoneTexture;
-// uniform sampler2D waterTexture;
-// uniform sampler2D woodTexture[2];
-// uniform sampler2D grassTexture[3];
-// uniform sampler2D leafTexture[2];
-// 
-// void main() {
-//     vec4 texColor = vec4(1.0);
-//     if(blockType == 0)
-//         texColor = texture(stoneTexture, TexCoord);
-//     else if(blockType == 1)
-//         texColor = texture(waterTexture, TexCoord);
-//     else if(blockType == 2)
-//         texColor = texture(woodTexture[0], TexCoord); // or choose variant
-//     else if(blockType == 3)
-//         texColor = texture(leafTexture[0], TexCoord);
-//     // etc...
-//     FragColor = vec4(ourColor, 1.0) * texColor;
-// }
-// 
-// In your C++ code, you would load these textures from individual files,
-// bind them to the appropriate texture units, and set the sampler uniforms.
-// For now, the code below still uses the color tinting system.
+// To achieve a 24×24 “pixel art” look on each block face without images,
+// we now define cube vertex data with per–face UV coordinates and use a
+// fragment shader that quantizes the UVs into 24 cells and draws grid lines.
+// This makes each block appear as if it were drawn using a 24×24 pixel grid.
 
+// ------------------------- Shader Sources -------------------------
 const char* vertexShaderSource = R"(
    #version 330 core
    layout (location = 0) in vec3 aPos;
-   // For textures, add: layout (location = 1) in vec2 aTexCoord;
+   layout (location = 1) in vec2 aTexCoord;
    layout (location = 2) in vec3 aOffset;
-   // For textures, you would output the tex coord: out vec2 TexCoord;
+   out vec2 TexCoord;
    out vec3 ourColor;
    uniform mat4 model;
    uniform mat4 view;
@@ -761,32 +736,77 @@ const char* vertexShaderSource = R"(
            pos += aOffset;
        gl_Position = projection * view * model * vec4(pos, 1.0);
        ourColor = blockColors[blockType];
-       // For textures, pass through: TexCoord = aTexCoord;
+       TexCoord = aTexCoord;
    }
 )";
 const char* fragmentShaderSource = R"(
    #version 330 core
+   in vec2 TexCoord;
    in vec3 ourColor;
-   // For textures, add: in vec2 TexCoord;
    out vec4 FragColor;
    uniform int blockType;
-   float random(vec2 st) {
-       return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
-   }
    void main() {
-       // For now, we still use the color system.
-       // In a textured version, you would sample a texture and multiply it by ourColor.
-       if(blockType == 0) {
-           // Removed grain effect for stone.
+       float gridSize = 24.0;
+       float lineWidth = 0.03;
+       vec2 f = fract(TexCoord * gridSize);
+       if(f.x < lineWidth || f.y < lineWidth)
+           FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+       else
            FragColor = vec4(ourColor, 1.0);
-       } else {
-           float alpha = (blockType == 1) ? 0.5 : 1.0;
-           FragColor = vec4(ourColor, alpha);
-       }
    }
 )";
 
-// ==================== MAIN FUNCTION ====================
+// ------------------------- Cube Vertex Data -------------------------
+// Instead of using a separate texture image, we now define a cube with
+// per-face UV coordinates. Each face’s UV spans [0,1], so when quantized
+// into 24 steps, you see a 24×24 grid.
+float cubeVertices[] = {
+    // positions            // texture Coords
+    // Front face
+    -0.5f, -0.5f,  0.5f,     0.0f, 0.0f,
+     0.5f, -0.5f,  0.5f,     1.0f, 0.0f,
+     0.5f,  0.5f,  0.5f,     1.0f, 1.0f,
+     0.5f,  0.5f,  0.5f,     1.0f, 1.0f,
+    -0.5f,  0.5f,  0.5f,     0.0f, 1.0f,
+    -0.5f, -0.5f,  0.5f,     0.0f, 0.0f,
+    // Right face
+     0.5f, -0.5f,  0.5f,     0.0f, 0.0f,
+     0.5f, -0.5f, -0.5f,     1.0f, 0.0f,
+     0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+     0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+     0.5f,  0.5f,  0.5f,     0.0f, 1.0f,
+     0.5f, -0.5f,  0.5f,     0.0f, 0.0f,
+     // Back face
+      0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
+     -0.5f, -0.5f, -0.5f,     1.0f, 0.0f,
+     -0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+     -0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+      0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
+      0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
+      // Left face
+      -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
+      -0.5f, -0.5f,  0.5f,     1.0f, 0.0f,
+      -0.5f,  0.5f,  0.5f,     1.0f, 1.0f,
+      -0.5f,  0.5f,  0.5f,     1.0f, 1.0f,
+      -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
+      -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
+      // Top face
+      -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+       0.5f,  0.5f,  0.5f,     1.0f, 0.0f,
+       0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+       0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+      -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
+      -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+      // Bottom face
+      -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
+       0.5f, -0.5f, -0.5f,     1.0f, 0.0f,
+       0.5f, -0.5f,  0.5f,     1.0f, 1.0f,
+       0.5f, -0.5f,  0.5f,     1.0f, 1.0f,
+      -0.5f, -0.5f,  0.5f,     0.0f, 1.0f,
+      -0.5f, -0.5f, -0.5f,     0.0f, 0.0f
+};
+
+// ------------------------- MAIN FUNCTION -------------------------
 int main() {
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW\n";
@@ -812,7 +832,7 @@ int main() {
         return -1;
     }
 
-    // Shader compilation and linking.
+    // ------------------------- Shader Compilation -------------------------
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
     glCompileShader(vertexShader);
@@ -826,45 +846,9 @@ int main() {
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
-    // ------------------------------------------------------------------
-    // Set up vertex data for a cube (positions only).
-    // (If using textures, you would include UV coordinates here.)
-    // ------------------------------------------------------------------
-    float vertices[] = {
-        -0.5f, -0.5f,  0.5f,
-         0.5f, -0.5f,  0.5f,
-         0.5f,  0.5f,  0.5f,
-        -0.5f,  0.5f,  0.5f,
-        -0.5f, -0.5f, -0.5f,
-         0.5f, -0.5f, -0.5f,
-         0.5f,  0.5f, -0.5f,
-        -0.5f,  0.5f, -0.5f,
-    };
-    float redVertices[] = {
-        -0.5f, -0.5f,  0.5f,
-         0.5f, -0.5f,  0.5f,
-         0.5f,  0.5f,  0.5f,
-        -0.5f,  0.5f,  0.5f,
-        -0.5f, -0.5f, -0.5f,
-         0.5f, -0.5f, -0.5f,
-         0.5f,  0.5f, -0.5f,
-        -0.5f,  0.5f, -0.5f,
-    };
-    unsigned int indices[] = {
-       0, 1, 2,  2, 3, 0,
-       1, 5, 6,  6, 2, 1,
-       5, 4, 7,  7, 6, 5,
-       4, 0, 3,  3, 7, 4,
-       3, 2, 6,  6, 7, 3,
-       4, 5, 1,  1, 0, 4
-    };
-
-    // ------------------------------------------------------------------
-    // Generate and set up VAOs/VBOs.
-    // (We create VAOs for multiple block types.)
-    // ------------------------------------------------------------------
-    unsigned int VAO, redVAO, VBO, redVBO, waterVAO, stoneVAO, EBO, instanceVBO;
-    unsigned int treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
+    // ------------------------- Setup VAOs and VBOs -------------------------
+    unsigned int VAO, redVAO, waterVAO, stoneVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
+    unsigned int VBO, instanceVBO;
     glGenVertexArrays(1, &VAO);
     glGenVertexArrays(1, &redVAO);
     glGenVertexArrays(1, &waterVAO);
@@ -875,109 +859,42 @@ int main() {
     glGenVertexArrays(1, &fallenTreeVAO);
     glGenVertexArrays(1, &firLeafVAO);
     glGenBuffers(1, &VBO);
-    glGenBuffers(1, &redVBO);
-    glGenBuffers(1, &EBO);
     glGenBuffers(1, &instanceVBO);
 
-    // Setup Regular Cube VAO.
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
+    // Setup a generic cube VAO (using cubeVertices with positions and UVs)
+    auto setupVAO = [&](unsigned int vao, bool instanced) {
+        glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+        // position attribute
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        // texture coordinate attribute
+        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        if (instanced) {
+            glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+            glEnableVertexAttribArray(2);
+            glVertexAttribDivisor(2, 1);
+        }
+        };
 
-    // Setup Red Cube VAO.
-    glBindVertexArray(redVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, redVBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(redVertices), redVertices, GL_STATIC_DRAW);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-
-    // Setup Water VAO.
-    glBindVertexArray(waterVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Stone VAO.
-    glBindVertexArray(stoneVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Tree Trunk VAO.
-    glBindVertexArray(treeTrunkVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Pine Tree Leaves VAO.
-    glBindVertexArray(treeLeafVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Water Lily VAO.
-    glBindVertexArray(waterLilyVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Fallen Tree (Log) VAO.
-    glBindVertexArray(fallenTreeVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-
-    // Setup Fir Tree Leaves VAO.
-    glBindVertexArray(firLeafVAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-    glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
+    setupVAO(VAO, false);         // for the origin cube
+    setupVAO(redVAO, false);      // for the outline cube
+    setupVAO(waterVAO, true);
+    setupVAO(stoneVAO, true);
+    setupVAO(treeTrunkVAO, true);
+    setupVAO(treeLeafVAO, true);
+    setupVAO(waterLilyVAO, true);
+    setupVAO(fallenTreeVAO, true);
+    setupVAO(firLeafVAO, true);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // ------------------- Main Render Loop -------------------
+    // ------------------------- Main Render Loop -------------------------
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -999,7 +916,7 @@ int main() {
 
         // Set uniform blockColors (8 entries)
         glm::vec3 blockColors[8];
-        blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (with noise grain removed)
+        blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (grid effect will show 24×24 pattern)
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);       // Water
         blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);    // Tree trunk (wood)
         blockColors[3] = glm::vec3(0.5f, 0.5f, 0.0f);       // Pine tree leaves
@@ -1042,7 +959,7 @@ int main() {
             globalFallenTreeTrunkInstances.insert(globalFallenTreeTrunkInstances.end(), chunk->fallenTreeTrunkPositions.begin(), chunk->fallenTreeTrunkPositions.end());
         }
 
-        // Helper lambda to update instance VBO and draw.
+        // Helper lambda to update instance VBO and draw using glDrawArraysInstanced.
         auto drawInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty())
                 return;
@@ -1052,16 +969,17 @@ int main() {
             glBindVertexArray(vao);
             glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
-            glDrawElementsInstanced(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0, static_cast<GLsizei>(instances.size()));
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
 
         drawInstances(stoneVAO, 0, globalStoneInstances);
+        // Draw the origin cube.
         glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 4);
         {
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-            glBindVertexArray(redVAO);
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+            glBindVertexArray(VAO);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
         }
         drawInstances(treeTrunkVAO, 2, globalTreeTrunkInstances);
         drawInstances(treeLeafVAO, 3, globalPineLeafInstances);
@@ -1087,7 +1005,7 @@ int main() {
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             glLineWidth(2.0f);
             glBindVertexArray(redVAO);
-            glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
             // Restore fill mode and re-enable depth testing.
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             glEnable(GL_DEPTH_TEST);
@@ -1098,7 +1016,7 @@ int main() {
         glfwPollEvents();
     }
 
-    // Cleanup.
+    // ------------------------- Cleanup -------------------------
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &redVAO);
     glDeleteVertexArrays(1, &waterVAO);
@@ -1109,8 +1027,6 @@ int main() {
     glDeleteVertexArrays(1, &fallenTreeVAO);
     glDeleteVertexArrays(1, &firLeafVAO);
     glDeleteBuffers(1, &VBO);
-    glDeleteBuffers(1, &redVBO);
-    glDeleteBuffers(1, &EBO);
     glDeleteBuffers(1, &instanceVBO);
     glDeleteProgram(shaderProgram);
     glfwTerminate();
