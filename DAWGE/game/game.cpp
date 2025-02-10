@@ -1,8 +1,10 @@
 // ======================================================================
 // VoxelGame.cpp
 // A single-file version with the block outline (mining) feature added,
-// modified so that raycasting checks all block types and forces the outline
-// to be visible (by temporarily disabling depth testing).
+// modified so that tree logs and leaves can be mined by using a larger
+// epsilon tolerance in the raycast, and with an outline drawing pass that
+// temporarily disables depth testing. Also, an outline of how to integrate
+// separate textures per block type with tinting is provided.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -10,6 +12,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+// We'll use epsilonEqual with a larger tolerance.
 
 
 #include <iostream>
@@ -23,7 +26,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 800;
 const unsigned int WINDOW_HEIGHT = 600;
-const float RENDER_DISTANCE = 10.0f;
+const float RENDER_DISTANCE = 10.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -284,10 +287,9 @@ std::vector<glm::vec3> generateFirCanopy(int groundHeight, int trunkHeight, int 
 
 // ==================== Raycasting ====================
 // Modified: now checks if the candidate block exists in any block array in its chunk,
-// in addition to the terrain test.
+// in addition to the terrain test, and uses a larger epsilon (0.5f) for the comparisons.
 glm::ivec3 raycastForBlock(bool place) {
     float t = 0.0f;
-    // You may adjust the step increment if needed (0.1f used here)
     while (t < 5.0f) {
         glm::vec3 p = cameraPos + t * cameraFront;
         glm::ivec3 candidate = glm::ivec3(std::round(p.x), std::round(p.y), std::round(p.z));
@@ -304,58 +306,38 @@ glm::ivec3 raycastForBlock(bool place) {
         ChunkPos cp{ chunkX, chunkZ };
         if (chunks.find(cp) != chunks.end()) {
             Chunk& ch = chunks[cp];
-            // Check in stone positions.
+            // Use a larger epsilon tolerance (0.5f) for logs and leaves.
             for (const auto& pos : ch.stonePositions) {
-                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                    exists = true; break;
-                }
+                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
             }
-            // Check in tree trunk positions.
             if (!exists) {
                 for (const auto& pos : ch.treeTrunkPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
-            // Check in pine tree leaf positions.
             if (!exists) {
                 for (const auto& pos : ch.treeLeafPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
-            // Check in fir tree leaf positions.
             if (!exists) {
                 for (const auto& pos : ch.firLeafPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
-            // Check in water positions.
             if (!exists) {
                 for (const auto& pos : ch.waterPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
-            // Check in water lily positions.
             if (!exists) {
                 for (const auto& pos : ch.waterLilyPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
-            // Check in fallen tree trunk positions.
             if (!exists) {
                 for (const auto& pos : ch.fallenTreeTrunkPositions) {
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.1f))) {
-                        exists = true; break;
-                    }
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), 0.5f))) { exists = true; break; }
                 }
             }
         }
@@ -726,11 +708,48 @@ void processInput(GLFWwindow* window) {
 
 // ==================== VIEW (Rendering) ====================
 //
-// Shader sources
+// Note: To use textures, you would add texture coordinates to your vertex data
+// and modify your shaders to sample from individual textures (loaded from separate
+// files) and then tint them with the blockColors uniform.
+// (Below is an example of how your shader code might be modified.)
+// Vertex shader would need an extra attribute for TexCoord and pass it to the fragment shader.
+// Fragment shader example:
+//
+// #version 330 core
+// in vec3 ourColor;
+// in vec2 TexCoord;
+// out vec4 FragColor;
+// uniform int blockType;
+// uniform sampler2D stoneTexture;
+// uniform sampler2D waterTexture;
+// uniform sampler2D woodTexture[2];
+// uniform sampler2D grassTexture[3];
+// uniform sampler2D leafTexture[2];
+// 
+// void main() {
+//     vec4 texColor = vec4(1.0);
+//     if(blockType == 0)
+//         texColor = texture(stoneTexture, TexCoord);
+//     else if(blockType == 1)
+//         texColor = texture(waterTexture, TexCoord);
+//     else if(blockType == 2)
+//         texColor = texture(woodTexture[0], TexCoord); // or choose variant
+//     else if(blockType == 3)
+//         texColor = texture(leafTexture[0], TexCoord);
+//     // etc...
+//     FragColor = vec4(ourColor, 1.0) * texColor;
+// }
+// 
+// In your C++ code, you would load these textures from individual files,
+// bind them to the appropriate texture units, and set the sampler uniforms.
+// For now, the code below still uses the color tinting system.
+
 const char* vertexShaderSource = R"(
    #version 330 core
    layout (location = 0) in vec3 aPos;
+   // For textures, add: layout (location = 1) in vec2 aTexCoord;
    layout (location = 2) in vec3 aOffset;
+   // For textures, you would output the tex coord: out vec2 TexCoord;
    out vec3 ourColor;
    uniform mat4 model;
    uniform mat4 view;
@@ -743,17 +762,21 @@ const char* vertexShaderSource = R"(
            pos += aOffset;
        gl_Position = projection * view * model * vec4(pos, 1.0);
        ourColor = blockColors[blockType];
+       // For textures, pass through: TexCoord = aTexCoord;
    }
 )";
 const char* fragmentShaderSource = R"(
    #version 330 core
    in vec3 ourColor;
+   // For textures, add: in vec2 TexCoord;
    out vec4 FragColor;
    uniform int blockType;
    float random(vec2 st) {
        return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
    }
    void main() {
+       // For now, we still use the color system.
+       // In a textured version, you would sample a texture and multiply it by ourColor.
        if(blockType == 0) {
            float grain = random(gl_FragCoord.xy);
            FragColor = vec4(ourColor * (0.8 + 0.2 * grain), 1.0);
@@ -806,6 +829,7 @@ int main() {
 
     // ------------------------------------------------------------------
     // Set up vertex data for a cube (positions only).
+    // (If using textures, you would include UV coordinates here.)
     // ------------------------------------------------------------------
     float vertices[] = {
         -0.5f, -0.5f,  0.5f,
@@ -978,7 +1002,7 @@ int main() {
         glm::vec3 blockColors[8];
         blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (with noise grain)
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);       // Water
-        blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);    // Tree trunk
+        blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);    // Tree trunk (wood)
         blockColors[3] = glm::vec3(0.5f, 0.5f, 0.0f);       // Pine tree leaves
         blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);       // Origin cube
         blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);       // Water lily
