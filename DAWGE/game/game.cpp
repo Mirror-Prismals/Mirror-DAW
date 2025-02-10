@@ -14,7 +14,6 @@
 #include <glm/gtc/type_ptr.hpp>
 // We'll use epsilonEqual with a larger tolerance.
 
-
 #include <iostream>
 #include <vector>
 #include <unordered_map>
@@ -24,9 +23,9 @@
 #include <algorithm>
 
 // ==================== Global Configuration ====================
-const unsigned int WINDOW_WIDTH = 800;
-const unsigned int WINDOW_HEIGHT = 600;
-const float RENDER_DISTANCE = 10.0f; // For testing, reduced render distance.
+const unsigned int WINDOW_WIDTH = 1206;
+const unsigned int WINDOW_HEIGHT = 832;
+const float RENDER_DISTANCE = 100.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -778,8 +777,8 @@ const char* fragmentShaderSource = R"(
        // For now, we still use the color system.
        // In a textured version, you would sample a texture and multiply it by ourColor.
        if(blockType == 0) {
-           float grain = random(gl_FragCoord.xy);
-           FragColor = vec4(ourColor * (0.8 + 0.2 * grain), 1.0);
+           // Removed grain effect for stone.
+           FragColor = vec4(ourColor, 1.0);
        } else {
            float alpha = (blockType == 1) ? 0.5 : 1.0;
            FragColor = vec4(ourColor, alpha);
@@ -1000,7 +999,7 @@ int main() {
 
         // Set uniform blockColors (8 entries)
         glm::vec3 blockColors[8];
-        blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (with noise grain)
+        blockColors[0] = glm::vec3(0.35f, 0.5f, 0.39f);    // Stone (with noise grain removed)
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);       // Water
         blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);    // Tree trunk (wood)
         blockColors[3] = glm::vec3(0.5f, 0.5f, 0.0f);       // Pine tree leaves
