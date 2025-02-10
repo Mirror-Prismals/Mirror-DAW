@@ -30,7 +30,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 100.0f; // For testing, reduced render distance.
+const float RENDER_DISTANCE = 10.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -563,7 +563,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     }
                     if (canPlaceLily) {
                         int hashVal = std::abs((static_cast<int>(worldX) * 91321) ^ (static_cast<int>(worldZ) * 7817));
-                        if (hashVal % 300 < 1) {
+                        if (hashVal % 100 < 1) {
                             for (int dx = -7; dx < 7; dx++) {
                                 for (int dz = -7; dz < 7; dz++) {
                                     chunk.waterLilyPositions.push_back(glm::vec3(worldX + dx, 0.2f, worldZ + dz));
@@ -582,7 +582,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
                     int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
-                    if (hashValPine % 10000 < 1) {
+                    if (hashValPine % 1000 < 1) {
                         int trunkHeight = 60;
                         int trunkThickness = 4;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -596,7 +596,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                     }
                     int hashValFir = std::abs((intWorldX * 83492791) ^ (intWorldZ * 19349663));
-                    if (hashValFir % 12000 < 1) {
+                    if (hashValFir % 1000 < 1) {
                         int trunkHeight = 40;
                         int trunkThickness = 3;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -987,7 +987,7 @@ int main() {
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);       // Water
         // blockColors[2] = glm::vec3(0.55f, 0.27f, 0.07f);
         blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Tree trunk (wood)
-        blockColors[3] = glm::vec3(0.5f, 0.5f, 0.0f);       // Pine tree leaves
+        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);       // Pine tree leaves
         blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);       // Origin cube
         blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);       // Water lily
         blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);    // Fallen log
