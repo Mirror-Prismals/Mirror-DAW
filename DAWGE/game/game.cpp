@@ -10,8 +10,10 @@
 //   6) Procedurally generated bushes (small, medium, large).
 //   7) Independent color controls for all new items (oak trunks, oak leaves,
 //      leaf piles, and the 3 bush sizes).
-//
-// This updated file is now over 1500 lines of code (single-file).
+//   8) Atmospheric / aerial perspective: blocks far from the player appear lighter
+//      and bluer. Now the effect blends smoothly with a gradient. For every 100
+//      blocks, red and green are increased by 0.05 and blue by 0.07, blended
+//      continuously with distance.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -32,7 +34,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 100.0f; // For testing, reduced render distance.
+const float RENDER_DISTANCE = 36.0f; // For testing, reduced render distance.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -1076,12 +1078,15 @@ const char* vertexShaderSource = R"(
    layout (location = 2) in vec3 aOffset;
    out vec2 TexCoord;
    out vec3 ourColor;
+   out float instanceDistance;
    uniform mat4 model;
    uniform mat4 view;
    uniform mat4 projection;
    uniform int blockType;
    // We'll hold up to 14 block colors now:
    uniform vec3 blockColors[14];
+   // New uniform for atmospheric perspective:
+   uniform vec3 cameraPos;
    void main() {
        vec3 pos = aPos;
        if (gl_InstanceID > 0)
@@ -1089,6 +1094,13 @@ const char* vertexShaderSource = R"(
        gl_Position = projection * view * model * vec4(pos, 1.0);
        ourColor = blockColors[blockType];
        TexCoord = aTexCoord;
+       // Compute distance from the block center to the camera.
+       if (gl_InstanceID > 0) {
+           instanceDistance = length(aOffset - cameraPos);
+       } else {
+           // For non-instanced draw, extract the translation from the model matrix.
+           instanceDistance = length(vec3(model[3]) - cameraPos);
+       }
    }
 )";
 
@@ -1096,6 +1108,7 @@ const char* fragmentShaderSource = R"(
    #version 330 core
    in vec2 TexCoord;
    in vec3 ourColor;
+   in float instanceDistance;
    out vec4 FragColor;
    uniform int blockType;
    void main() {
@@ -1105,8 +1118,15 @@ const char* fragmentShaderSource = R"(
        // draw grid lines
        if(f.x < lineWidth || f.y < lineWidth)
            FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-       else
-           FragColor = vec4(ourColor, 1.0);
+       else {
+           // Use a smooth gradient: factor is instanceDistance / 100.
+           float factor = instanceDistance / 100.0;
+           // For each 100 blocks, add 0.05 to red and green and 0.07 to blue.
+           vec3 offset = vec3(0.05 * factor, 0.05 * factor, 0.07 * factor);
+           vec3 finalColor = ourColor + offset;
+           finalColor = clamp(finalColor, 0.0, 1.0);
+           FragColor = vec4(finalColor, 1.0);
+       }
    }
 )";
 
@@ -1322,6 +1342,8 @@ int main() {
             0.1f, 10000.0f);
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        // Update the camera position uniform for atmospheric perspective
+        glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
 
         // We'll define up to 14 blockColors now:
         //   0: Stone
