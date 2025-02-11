@@ -14,14 +14,15 @@
 //      and bluer. Now the effect blends smoothly with a gradient. For every 100
 //      blocks, red and green are increased by 0.05 and blue by 0.07, blended
 //      continuously with distance.
-//   9) NEW: Ground branches – thin procedural branches on the ground.
-//  10) NEW: Ancient tree (fourth tree type) with trunk, canopy, and procedural
-//      branches. Ancient tree branches are now full blocks. Four branches are
-//      generated at fixed relative heights ("low", "low-mid", "high-mid", "high")
-//      with a small random fluctuation, extended longer, and with a mini canopy
-//      of leaves at each tip.
-//  11) NEW: A simple collision check for trees so that trees of the same type
+//   9) Ground branches – thin procedural branches on the ground.
+//  10) Ancient tree (fourth tree type) with trunk, canopy, and procedural branches.
+//      Ancient tree branches are now full blocks.
+//  11) A simple collision check for trees so that trees of the same type
 //      do not spawn too close to each other.
+//  12) NEW: Aurora blocks in the sky – actual translucent blocks (block type 19)
+//      generated via 3D Perlin noise in a fixed sky region (here y=80 to 100) and
+//      drawn with a magenta, translucent color. In the vertex shader a slight vertical
+//      oscillation (using a time uniform) animates the aurora.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -40,7 +41,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 64.0f; // For testing.
+const float RENDER_DISTANCE = 100.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -80,7 +81,7 @@ namespace std {
     };
 }
 
-// The Chunk now also stores vectors for ground branches and ancient trees.
+// The Chunk now also stores vectors for ground branches, ancient trees, and aurora blocks.
 struct Chunk {
     std::vector<glm::vec3> waterPositions;
     std::vector<glm::vec3> stonePositions;
@@ -100,15 +101,18 @@ struct Chunk {
     std::vector<glm::vec3> bushMediumPositions;
     std::vector<glm::vec3> bushLargePositions;
 
-    // NEW: Ground branches (drawn as thin blocks)
+    // Ground branches (drawn as thin blocks)
     // Stored as vec4: xyz = position, w = rotation.
     std::vector<glm::vec4> branchPositions;
 
-    // NEW: Ancient tree arrays (fourth tree type)
+    // Ancient tree arrays (fourth tree type)
     std::vector<glm::vec3> ancientTrunkPositions; // Block type 16
     std::vector<glm::vec3> ancientLeafPositions;  // Block type 17
     // Ancient branches are now full blocks.
     std::vector<glm::vec3> ancientBranchPositions; // Block type 18
+
+    // NEW: Aurora blocks in the sky (block type 19)
+    std::vector<glm::vec3> auroraPositions;
 
     bool needsMeshUpdate;
     Chunk() : needsMeshUpdate(true) {}
@@ -126,7 +130,8 @@ struct ivec3_hash {
 //   0 = Stone, 1 = Water, 2 = Pine/Fir trunk, 3 = Pine leaves, 4 = Origin debug,
 //   5 = Water lily, 6 = Fallen log, 7 = Fir leaves, 8 = Oak trunk, 9 = Oak leaves,
 //  10 = Leaf pile, 11 = Bush (small), 12 = Bush (medium), 13 = Bush (large),
-//  14 = Ground branch, 16 = Ancient trunk, 17 = Ancient leaves, 18 = Ancient branch.
+//  14 = Ground branch, 16 = Ancient trunk, 17 = Ancient leaves, 18 = Ancient branch,
+//  19 = Aurora block.
 std::unordered_map<glm::ivec3, int, ivec3_hash> blockModifications;
 
 // Global chunk storage.
@@ -190,6 +195,8 @@ public:
 PerlinNoise continentalNoise(1);
 PerlinNoise elevationNoise(2);
 PerlinNoise ridgeNoise(3);
+// NEW: Perlin noise instance for aurora block placement.
+PerlinNoise auroraNoise(4);
 
 // ==================== Terrain Generation ====================
 struct TerrainPoint { double height; bool isLand; };
@@ -590,6 +597,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     chunk.ancientTrunkPositions.clear();
     chunk.ancientLeafPositions.clear();
     chunk.ancientBranchPositions.clear();
+    chunk.auroraPositions.clear();
 
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
@@ -706,7 +714,6 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         // low, low-mid, high-mid, high.
                         int branchBaseHeights[4] = { 7, 13, 19, 25 }; // relative to trunk (for trunkHeight=30)
                         for (int b = 0; b < 4; b++) {
-                            // Add a small random fluctuation of -1, 0, or +1.
                             int randomOffset = (rand() % 3) - 1;
                             int branchStart = branchBaseHeights[b] + randomOffset;
                             float branchRot = (b * 90.0f) * (3.14159f / 180.0f); // fixed cardinal directions.
@@ -716,10 +723,8 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 float bx = cos(branchRot) * i;
                                 float bz = sin(branchRot) * i;
                                 glm::vec3 branchBlockPos = branchStartPos + glm::vec3(bx, 0, bz);
-                                // Store as full block positions.
                                 chunk.ancientBranchPositions.push_back(branchBlockPos);
                             }
-                            // At the tip, add a mini canopy of leaves.
                             glm::vec3 tip = branchStartPos + glm::vec3(cos(branchRot) * (branchLength + 1), 0, sin(branchRot) * (branchLength + 1));
                             for (int dx = -1; dx <= 1; dx++) {
                                 for (int dy = -1; dy <= 1; dy++) {
@@ -836,6 +841,20 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             chunk.branchPositions.push_back(glm::vec4(worldX + 0.5f, groundHeight + 0.5f, worldZ + 0.5f, rot));
                         }
                     }
+                }
+            }
+        }
+    }
+    // --- NEW: Generate Aurora Blocks in the Sky (block type 19) ---
+    // For every (x,z) in this chunk, for y between 80 and 100, use 3D Perlin noise to decide placement.
+    for (int x = 0; x < CHUNK_SIZE; x++) {
+        for (int z = 0; z < CHUNK_SIZE; z++) {
+            double worldX = chunkX * CHUNK_SIZE + x;
+            double worldZ = chunkZ * CHUNK_SIZE + z;
+            for (int y = 135; y <= 136; y++) {
+                double n = auroraNoise.noise(worldX * 0.1, y * 0.1, worldZ * 0.1);
+                if (n > 0.44) {
+                    chunk.auroraPositions.push_back(glm::vec3(worldX, y, worldZ));
                 }
             }
         }
@@ -980,11 +999,9 @@ void processInput(GLFWwindow* window) {
 
 // ==================== VIEW (Rendering) ====================
 //
-// We define a 24×24 “pixel art” look on each block face using per-face UV coordinates and a fragment shader
-// that quantizes the UVs into 24 steps, drawing grid lines at each cell boundary.
-// Note: The blockColors uniform array size has been increased to 19.
-// For branch–type blocks (blockType 14 and 18), the vertex shader reads an extra instance attribute (rotation) at location 3.
-// For ancient branches (blockType 18) we now draw full blocks.
+// The vertex shader now also accepts a time uniform and, for blockType 19 (aurora),
+// applies a slight vertical oscillation to the block positions. Also note that the
+// blockColors uniform array size has been increased to 20.
 // ------------------------- Shader Sources -------------------------
 const char* vertexShaderSource = R"(
    #version 330 core
@@ -999,10 +1016,11 @@ const char* vertexShaderSource = R"(
    uniform mat4 view;
    uniform mat4 projection;
    uniform int blockType;
-   // Array of 19 block colors.
-   uniform vec3 blockColors[19];
+   // Array of 20 block colors.
+   uniform vec3 blockColors[20];
    // Atmospheric perspective uniform.
    uniform vec3 cameraPos;
+   uniform float time;
    layout (location = 2) in vec3 aOffset;
    layout (location = 3) in float aRotation;
    void main(){
@@ -1024,6 +1042,10 @@ const char* vertexShaderSource = R"(
            } else {
                pos += aOffset;
            }
+       }
+       // For aurora blocks, add a small animated vertical oscillation.
+       if(blockType == 19){
+           pos.y += sin(time + aOffset.x * 0.1) * 0.5;
        }
        gl_Position = projection * view * model * vec4(pos, 1.0);
        ourColor = blockColors[blockType];
@@ -1047,6 +1069,11 @@ const char* fragmentShaderSource = R"(
    out vec4 FragColor;
    uniform int blockType;
    void main(){
+       // For aurora blocks (blockType 19), output translucent magenta.
+       if(blockType == 19){
+           FragColor = vec4(ourColor, 0.1);
+           return;
+       }
        float gridSize = 24.0;
        float lineWidth = 0.03;
        vec2 f = fract(TexCoord * gridSize);
@@ -1289,6 +1316,8 @@ int main() {
         glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
+        // Pass the time uniform for aurora animation.
+        glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
@@ -1297,8 +1326,8 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
 
-        // Define 19 block colors.
-        glm::vec3 blockColors[19];
+        // Define 20 block colors.
+        glm::vec3 blockColors[20];
         blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f); // Stone
         blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);     // Water
         blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Pine/Fir trunk
@@ -1318,7 +1347,8 @@ int main() {
         blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);    // Ancient trunk
         blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);     // Ancient leaves
         blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);     // Ancient branch
-        glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 19, glm::value_ptr(blockColors[0]));
+        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);     // Aurora blocks (magenta)
+        glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
 
         // Build quadtree over chunks.
         int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
@@ -1353,6 +1383,7 @@ int main() {
         std::vector<glm::vec3> globalAncientLeafInstances;
         std::vector<glm::vec3> globalAncientBranchInstances;
         std::vector<glm::vec4> globalBranchInstances;
+        std::vector<glm::vec3> globalAuroraInstances;
 
         for (Chunk* chunk : visibleChunks) {
             globalStoneInstances.insert(globalStoneInstances.end(), chunk->stonePositions.begin(), chunk->stonePositions.end());
@@ -1372,6 +1403,7 @@ int main() {
             globalAncientLeafInstances.insert(globalAncientLeafInstances.end(), chunk->ancientLeafPositions.begin(), chunk->ancientLeafPositions.end());
             globalAncientBranchInstances.insert(globalAncientBranchInstances.end(), chunk->ancientBranchPositions.begin(), chunk->ancientBranchPositions.end());
             globalBranchInstances.insert(globalBranchInstances.end(), chunk->branchPositions.begin(), chunk->branchPositions.end());
+            globalAuroraInstances.insert(globalAuroraInstances.end(), chunk->auroraPositions.begin(), chunk->auroraPositions.end());
         }
 
         // Helper lambda for instanced drawing (non-branch blocks)
@@ -1426,6 +1458,8 @@ int main() {
         drawInstances(ancientLeafVAO, 17, globalAncientLeafInstances);
         drawAncientBranchInstances(ancientBranchVAO, 18, globalAncientBranchInstances);
         drawBranchInstances(branchVAO, branchInstanceVBO, 14, globalBranchInstances);
+        // --- Draw Aurora Blocks (block type 19) ---
+        drawInstances(stoneVAO, 19, globalAuroraInstances);
 
         // Draw the origin cube (blockType = 4)
         glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 4);
@@ -1445,7 +1479,7 @@ int main() {
             glm::vec3 outlineColor = glm::vec3(1.0f, 1.0f, 1.0f);
             glm::vec3 oldBlockColor0 = blockColors[0];
             blockColors[0] = outlineColor;
-            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 19, glm::value_ptr(blockColors[0]));
+            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 0);
             glDisable(GL_DEPTH_TEST);
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1455,7 +1489,7 @@ int main() {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             glEnable(GL_DEPTH_TEST);
             blockColors[0] = oldBlockColor0;
-            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 19, glm::value_ptr(blockColors[0]));
+            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
         }
         // ====================================================================
 
