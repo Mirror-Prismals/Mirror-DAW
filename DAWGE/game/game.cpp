@@ -40,7 +40,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 36.0f; // For testing.
+const float RENDER_DISTANCE = 64.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
 // ==================== Global Camera Variables ====================
@@ -1054,7 +1054,7 @@ const char* fragmentShaderSource = R"(
            FragColor = vec4(0.0, 0.0, 0.0, 1.0);
        else {
            float factor = instanceDistance / 100.0;
-           vec3 offset = vec3(0.05 * factor, 0.05 * factor, 0.07 * factor);
+           vec3 offset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
            vec3 finalColor = ourColor + offset;
            finalColor = clamp(finalColor, 0.0, 1.0);
            FragColor = vec4(finalColor, 1.0);
