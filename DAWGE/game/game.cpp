@@ -27,24 +27,22 @@
 //      – The top layer (formerly stone) is now grass (block type 0).
 //      – Immediately beneath is a dirt layer (block type 15).
 //      – Under that is the deep stone layer (block type 20).
-//  14) The deep stone layer is extended down to MIN_Y (set to –64) for both land and water,
-//      with cave carving applied via 3D Perlin noise. In the standard (water) system,
-//      if the noise value is below CAVE_THRESHOLD, stone is placed; otherwise, if y < 0,
-//      water fills the cave.
-//  15) NEW: Instead of having a hard y–level split between water and lava caves,
-//      we now use a unified cave system for land cells. In the deep layers of a land cell,
-//      a unified noise (sampled at a very low scale) determines whether a cell is carved out
-//      as a cave. In the carved–out cells a secondary noise value determines which liquid fills
-//      the cave: if the secondary value is below 0.3, water is used (block type 1); otherwise,
-//      lava (block type 21, orange) is used.
-//      **New:** However, if a cell is above sea level (y ≥ 0) then even if the cave noise would
-//      carve out a cave, we simply place stone.
-//  16) NEW: Blob elevation offsets for large‐scale terrain variation.
-//      The world is divided into roughly 1000–block–wide cells whose overall base height
-//      is determined by a smooth (spline/bilinear) interpolation between random values.
-//      This means that if you travel for 1000 blocks you may suddenly encounter a large area
-//      where the general level is much higher (or lower)—producing real tall mountains,
-//      roughly as tall as the trees themselves.
+//  14) The deep stone layer is now generated only as the four blocks directly below
+//      the dirt layer (or water level) – that is, the stone extends only four blocks
+//      downward instead of all the way to a fixed MIN_Y.
+//  15) NEW: Sea level is now dynamic and flat. The world is divided into roughly
+//      1000–block–wide cells whose base height is computed via bilinear interpolation
+//      of random blob offsets (via getBlobHeight()). Then a fixed adjustment is
+//      subtracted to lower the water level. When computing the final terrain height,
+//      if the noise–derived elevation isn’t at least a threshold above the blob base,
+//      the cell is treated as water (with its height set to the lowered blob base).
+//  16) NEW: Aerial perspective based on elevation. In addition to the original effect
+//      (which uses the distance from the camera), the vertex shader now outputs the
+//      world Y (elevation) for each block. The fragment shader then adds a hardcoded
+//      offset based on that elevation so that higher blocks receive additional tinting.
+//  17) NEW: Occlusion Culling – after generating all block positions in a chunk,
+//      a pass removes blocks that are completely surrounded by other solid blocks,
+//      so that internal (hidden) blocks are not rendered.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -55,6 +53,7 @@
 #include <iostream>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <random>
 #include <cmath>
 #include <numeric>
@@ -63,24 +62,19 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 30.0f; // For testing.
+const float RENDER_DISTANCE = 10.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
-// Extend deep stone further down.
-const int MIN_Y = -4;
+// (MIN_Y is no longer used to extend stone; see below.)
 
 // Constants for the standard water cave generation.
 const float CAVE_SCALE = 0.04f;    // Lower scale -> larger cave features.
-const float CAVE_THRESHOLD = 0.6f; // If noise value is below this, stone is placed; otherwise, cave is carved and (if y < 0) filled with water.
+const float CAVE_THRESHOLD = 0.6f;     // If noise value is below this, stone is placed; otherwise, cave is carved and (if below sea level) filled with water.
 
 // ------------------ NEW Unified Cave System for Land ------------------
-// To generate massive caves that intermingle water and lava, we use a unified system.
-// Here the "unified" noise is sampled at a very low frequency to carve out huge regions.
-// Then a secondary noise (using lavaCaveNoise) determines which liquid fills the carved area.
-const float UNIFIED_CAVE_SCALE = 0.1f;      // Even lower scale for HUGE caves.
-const float UNIFIED_CAVE_THRESHOLD = -0.8f; // Lower threshold means most cells will be carved out.
-const float LIQUID_TYPE_SCALE = 0.02f;      // Scale for secondary liquid determination.
-// In the secondary check, if the noise is less than 0.3, fill with water; otherwise, fill with lava.
+const float UNIFIED_CAVE_SCALE = 0.1f;      // Even lower scale for huge caves.
+const float UNIFIED_CAVE_THRESHOLD = -0.8f;     // Lower threshold means most cells will be carved out.
+const float LIQUID_TYPE_SCALE = 0.02f;     // Scale for secondary liquid determination.
 
 // ==================== Global Camera Variables ====================
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
@@ -119,37 +113,28 @@ namespace std {
     };
 }
 
-// The Chunk now stores vectors for various block types, including the new lava.
 struct Chunk {
     std::vector<glm::vec3> waterPositions;
-    // Ground layers:
-    std::vector<glm::vec3> grassPositions;     // Top layer (grass, block type 0)
-    std::vector<glm::vec3> dirtPositions;      // Dirt layer (block type 15)
-    std::vector<glm::vec3> deepStonePositions; // Deep stone layer (block type 20)
-    // NEW: Lava block vector (block type 21)
-    std::vector<glm::vec3> lavaPositions;
-    std::vector<glm::vec3> treeTrunkPositions;     // Pine/Fir trunk (block type 2)
-    std::vector<glm::vec3> treeLeafPositions;      // Pine leaves (block type 3)
-    std::vector<glm::vec3> firLeafPositions;       // Fir leaves (block type 7)
-    std::vector<glm::vec3> waterLilyPositions;     // Water lilies (block type 5)
+    std::vector<glm::vec3> grassPositions;     // Grass (block type 0)
+    std::vector<glm::vec3> dirtPositions;       // Dirt (block type 15)
+    std::vector<glm::vec3> deepStonePositions;  // Deep stone (block type 20)
+    std::vector<glm::vec3> lavaPositions;         // Lava (block type 21)
+    std::vector<glm::vec3> treeTrunkPositions;    // Pine/Fir trunk (block type 2)
+    std::vector<glm::vec3> treeLeafPositions;     // Pine leaves (block type 3)
+    std::vector<glm::vec3> firLeafPositions;      // Fir leaves (block type 7)
+    std::vector<glm::vec3> waterLilyPositions;    // Water lily (block type 5)
     std::vector<glm::vec3> fallenTreeTrunkPositions; // Fallen log (block type 6)
-    // Oak trees:
-    std::vector<glm::vec3> oakTrunkPositions; // (block type 8)
-    std::vector<glm::vec3> oakLeafPositions;  // (block type 9)
-    // Leaf piles and bushes:
-    std::vector<glm::vec3> leafPilePositions;  // (block type 10)
-    std::vector<glm::vec3> bushSmallPositions; // (block type 11)
-    std::vector<glm::vec3> bushMediumPositions;// (block type 12)
-    std::vector<glm::vec3> bushLargePositions; // (block type 13)
-    // Ground branches (block type 14)
-    std::vector<glm::vec4> branchPositions;
-    // Ancient trees:
-    std::vector<glm::vec3> ancientTrunkPositions; // (block type 16)
-    std::vector<glm::vec3> ancientLeafPositions;  // (block type 17)
-    std::vector<glm::vec3> ancientBranchPositions; // (block type 18)
-    // Aurora blocks (block type 19)
-    std::vector<glm::vec3> auroraPositions;
-
+    std::vector<glm::vec3> oakTrunkPositions;       // Oak trunk (block type 8)
+    std::vector<glm::vec3> oakLeafPositions;        // Oak leaves (block type 9)
+    std::vector<glm::vec3> leafPilePositions;       // Leaf pile (block type 10)
+    std::vector<glm::vec3> bushSmallPositions;      // Bush small (block type 11)
+    std::vector<glm::vec3> bushMediumPositions;     // Bush medium (block type 12)
+    std::vector<glm::vec3> bushLargePositions;      // Bush large (block type 13)
+    std::vector<glm::vec4> branchPositions;         // Ground branch (block type 14)
+    std::vector<glm::vec3> ancientTrunkPositions;   // Ancient trunk (block type 16)
+    std::vector<glm::vec3> ancientLeafPositions;    // Ancient leaves (block type 17)
+    std::vector<glm::vec3> ancientBranchPositions;  // Ancient branch (block type 18)
+    std::vector<glm::vec3> auroraPositions;           // Aurora blocks (block type 19)
     bool needsMeshUpdate;
     Chunk() : needsMeshUpdate(true) {}
 };
@@ -161,16 +146,7 @@ struct ivec3_hash {
     }
 };
 
-// Global block modifications: key is a block position, value indicates modification.
-// Mapping:
-//  0 = Grass, 1 = Water, 2 = Pine/Fir trunk, 3 = Pine leaves, 4 = Origin debug,
-//  5 = Water lily, 6 = Fallen log, 7 = Fir leaves, 8 = Oak trunk, 9 = Oak leaves,
-// 10 = Leaf pile, 11 = Bush (small), 12 = Bush (medium), 13 = Bush (large),
-// 14 = Ground branch, 15 = Dirt, 16 = Ancient trunk, 17 = Ancient leaves, 18 = Ancient branch,
-// 19 = Aurora block, 20 = Deep Stone, 21 = Lava.
 std::unordered_map<glm::ivec3, int, ivec3_hash> blockModifications;
-
-// Global chunk storage.
 std::unordered_map<ChunkPos, Chunk> chunks;
 
 // ==================== Utility: Perlin Noise ====================
@@ -191,9 +167,7 @@ public:
         std::iota(p.begin(), p.begin() + 256, 0);
         std::mt19937 gen(seed);
         std::shuffle(p.begin(), p.begin() + 256, gen);
-        for (int i = 0; i < 256; i++) {
-            p[256 + i] = p[i];
-        }
+        for (int i = 0; i < 256; i++) p[256 + i] = p[i];
     }
     double noise(double x, double y, double z) {
         int X = static_cast<int>(std::floor(x)) & 255;
@@ -212,12 +186,14 @@ public:
         int BA = p[B] + Z;
         int BB = p[B + 1] + Z;
         return lerp(w,
-            lerp(v, lerp(u, grad(p[AA], x, y, z),
-                grad(p[BA], x - 1, y, z)),
+            lerp(v,
+                lerp(u, grad(p[AA], x, y, z),
+                    grad(p[BA], x - 1, y, z)),
                 lerp(u, grad(p[AB], x, y - 1, z),
                     grad(p[BB], x - 1, y - 1, z))),
-            lerp(v, lerp(u, grad(p[AA + 1], x, y, z - 1),
-                grad(p[BA + 1], x - 1, y, z - 1)),
+            lerp(v,
+                lerp(u, grad(p[AA + 1], x, y, z - 1),
+                    grad(p[BA + 1], x - 1, y, z - 1)),
                 lerp(u, grad(p[AB + 1], x, y - 1, z - 1),
                     grad(p[BB + 1], x - 1, y - 1, z - 1))));
     }
@@ -228,7 +204,6 @@ public:
     }
 };
 
-// Existing noise instances.
 PerlinNoise continentalNoise(1);
 PerlinNoise elevationNoise(2);
 PerlinNoise ridgeNoise(3);
@@ -236,16 +211,9 @@ PerlinNoise caveNoise(5);
 PerlinNoise auroraNoise(4);
 PerlinNoise lavaCaveNoise(6);
 
-// ----------------- NEW: Mountain Noise Instance -----------------
-// (No longer used in the final terrain height; kept here for reference.)
-// PerlinNoise mountainNoise(7);
-
-// ----------------- NEW: Blob Elevation Offset -----------------
-// The world is divided into cells of roughly 1000 blocks in diameter.
-// Each cell is assigned a random height offset via getBlobHeight(), and then the
-// offset for any point is obtained by bilinearly interpolating between the four cell corners.
+// ----------------- NEW: Blob Elevation Offsets -----------------
+// The world is divided into roughly 1000-block cells; each cell gets a random offset.
 double getBlobHeight(int cx, int cz) {
-    // Use a simple hash to generate a pseudo-random value between -80 and +80.
     int n = (cx * 73856093) ^ (cz * 19349663);
     n = (n >> 13) ^ n;
     double r = 1.0 - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0;
@@ -255,43 +223,49 @@ double getBlobHeight(int cx, int cz) {
 // ==================== Terrain Generation ====================
 struct TerrainPoint { double height; bool isLand; };
 
-// Modified terrain function that now adds a blob-based elevation offset.
-// The world is divided into roughly 1000-block cells, and each cell gets a random offset.
-// The offset for any (x,z) is obtained by bilinear (smoothstep) interpolation between the four cell corners.
+// In this version the water level is flat and set to the blob base minus an adjustment.
+// The noise-based elevation is added on top only when it exceeds a chosen threshold.
 TerrainPoint getTerrainHeight(double x, double z) {
     const double CONTINENTAL_SCALE = 100.0;
     const double ELEVATION_SCALE = 50.0;
     const double RIDGE_SCALE = 25.0;
-    // Original continental/elevation/ridge factors:
+
     double continental = continentalNoise.noise(x / CONTINENTAL_SCALE, 0, z / CONTINENTAL_SCALE);
     continental = (continental + 1.0) / 2.0;
-    bool isLand = continental > 0.48;
-    if (!isLand)
-        return { -4.0, false };
-    double elevation = elevationNoise.noise(x / ELEVATION_SCALE, 0, z / ELEVATION_SCALE);
-    elevation = (elevation + 1.0) / 2.0;
-    double ridge = ridgeNoise.ridgeNoise(x / RIDGE_SCALE, 0, z / RIDGE_SCALE);
 
-    // Compute blob-based offset.
+    // Compute blob base using a cell size of 1000.
     double blobSize = 1000.0;
     double cellX = std::floor(x / blobSize);
     double cellZ = std::floor(z / blobSize);
-    double localX = (x - cellX * blobSize) / blobSize; // in [0,1]
-    double localZ = (z - cellZ * blobSize) / blobSize; // in [0,1]
+    double localX = (x - cellX * blobSize) / blobSize;
+    double localZ = (z - cellZ * blobSize) / blobSize;
     double h00 = getBlobHeight((int)cellX, (int)cellZ);
     double h10 = getBlobHeight((int)cellX + 1, (int)cellZ);
     double h01 = getBlobHeight((int)cellX, (int)cellZ + 1);
     double h11 = getBlobHeight((int)cellX + 1, (int)cellZ + 1);
-    // Smoothstep interpolation factors.
     double sx = localX * localX * (3 - 2 * localX);
     double sz = localZ * localZ * (3 - 2 * localZ);
-    double h0 = h00 * (1 - sx) + h10 * sx;
-    double h1 = h01 * (1 - sx) + h11 * sx;
-    double blobOffset = h0 * (1 - sz) + h1 * sz;
+    double baseSeaLevel = (h00 * (1 - sx) + h10 * sx) * (1 - sz) + (h01 * (1 - sx) + h11 * sx) * sz;
 
-    // Combine the factors. Adjust multipliers as desired.
-    double height = elevation * 8.0 + ridge * 12.0 + blobOffset;
-    return { height, true };
+    // Lower the water level so that it looks flat.
+    double waterAdjustment = -10.0; // Lower the water level by 10 units.
+    double waterLevel = baseSeaLevel - waterAdjustment;
+
+    // Compute noise-based elevation.
+    double elevation = elevationNoise.noise(x / ELEVATION_SCALE, 0, z / ELEVATION_SCALE);
+    elevation = (elevation + 1.0) / 2.0;
+    double ridge = ridgeNoise.ridgeNoise(x / RIDGE_SCALE, 0, z / RIDGE_SCALE);
+    double noiseHeight = elevation * 8.0 + ridge * 12.0;
+    double computedHeight = baseSeaLevel + noiseHeight;
+
+    // If computed height is not at least a threshold above the base, treat as water.
+    double threshold = 12.0;
+    if (computedHeight < baseSeaLevel + threshold) {
+        return { waterLevel, false };
+    }
+    else {
+        return { computedHeight, true };
+    }
 }
 
 // ==================== Frustum Culling ====================
@@ -330,9 +304,9 @@ std::vector<Plane> extractFrustumPlanes(const glm::mat4& VP) {
     planes[5].normal.z = VP[2][3] - VP[2][2];
     planes[5].d = VP[3][3] - VP[3][2];
     for (int i = 0; i < 6; i++) {
-        float length = glm::length(planes[i].normal);
-        planes[i].normal /= length;
-        planes[i].d /= length;
+        float len = glm::length(planes[i].normal);
+        planes[i].normal /= len;
+        planes[i].d /= len;
     }
     return planes;
 }
@@ -350,18 +324,16 @@ bool aabbInFrustum(const std::vector<Plane>& planes, const glm::vec3& min, const
 }
 
 // ==================== Helper: Tree Collision Check ====================
-// Returns true if any block in trunkArray is within 3.0 units of base.
-bool treeCollision(const std::vector<glm::vec3>& trunkArray, const glm::vec3& base) {
-    for (const auto& p : trunkArray) {
+bool treeCollision(const std::vector<glm::vec3>& trunks, const glm::vec3& base) {
+    for (const auto& p : trunks)
         if (glm::distance(p, base) < 3.0f)
             return true;
-    }
     return false;
 }
 
 // ==================== Tree Generation ====================
 std::vector<glm::vec3> generatePineCanopy(int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ) {
-    std::vector<glm::vec3> leafPositions;
+    std::vector<glm::vec3> leaves;
     int canopyOffset = 50;
     int canopyLayers = 80;
     int canopyBase = groundHeight + trunkHeight - canopyOffset;
@@ -376,38 +348,27 @@ std::vector<glm::vec3> generatePineCanopy(int groundHeight, int trunkHeight, int
         for (int dx = -range; dx <= range; dx++) {
             for (int dz = -range; dz <= range; dz++) {
                 float dist = std::sqrt(dx * dx + dz * dz);
-                if (std::abs(dist - currentRadius) < ringThickness) {
-                    leafPositions.push_back(glm::vec3(
-                        worldX + centerOffset + dx,
-                        yPos,
-                        worldZ + centerOffset + dz
-                    ));
-                }
+                if (std::abs(dist - currentRadius) < ringThickness)
+                    leaves.push_back(glm::vec3(worldX + centerOffset + dx, yPos, worldZ + centerOffset + dz));
             }
         }
     }
-    return leafPositions;
+    return leaves;
 }
 
 std::vector<glm::vec3> generateFirCanopy(int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ) {
-    std::vector<glm::vec3> leafPositions;
+    std::vector<glm::vec3> leaves;
     int centerY = groundHeight + trunkHeight;
     float radius = 7.0f;
     for (int dy = -static_cast<int>(radius); dy <= static_cast<int>(radius); dy++) {
         for (int dx = -static_cast<int>(radius); dx <= static_cast<int>(radius); dx++) {
             for (int dz = -static_cast<int>(radius); dz <= static_cast<int>(radius); dz++) {
-                float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist < radius) {
-                    leafPositions.push_back(glm::vec3(
-                        worldX + trunkThickness / 2.0f + dx,
-                        centerY + dy,
-                        worldZ + trunkThickness / 2.0f + dz
-                    ));
-                }
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) < radius)
+                    leaves.push_back(glm::vec3(worldX + trunkThickness / 2.0f + dx, centerY + dy, worldZ + trunkThickness / 2.0f + dz));
             }
         }
     }
-    return leafPositions;
+    return leaves;
 }
 
 std::vector<glm::vec3> generateOakCanopy(int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ) {
@@ -418,86 +379,132 @@ std::vector<glm::vec3> generateOakCanopy(int groundHeight, int trunkHeight, int 
     for (int dy = -static_cast<int>(radius); dy <= static_cast<int>(radius); dy++) {
         for (int dx = -static_cast<int>(radius); dx <= static_cast<int>(radius); dx++) {
             for (int dz = -static_cast<int>(radius); dz <= static_cast<int>(radius); dz++) {
-                float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                if (dist < radius) {
-                    leaves.push_back(glm::vec3(
-                        worldX + centerOffset + dx,
-                        centerY + dy,
-                        worldZ + centerOffset + dz
-                    ));
-                }
+                if (std::sqrt(dx * dx + dy * dy + dz * dz) < radius)
+                    leaves.push_back(glm::vec3(worldX + centerOffset + dx, centerY + dy, worldZ + centerOffset + dz));
             }
         }
     }
     return leaves;
 }
 
+// ==================== Occlusion Culling ====================
+// This function builds an occupancy set of solid blocks (from grass, dirt, deep stone,
+// tree trunks, fallen logs, oak trunks, ancient trunks, and ground branches) and then
+// filters out any block from these vectors that is completely surrounded (i.e. all 6 neighbors exist).
+void applyOcclusionCulling(Chunk& chunk) {
+    std::unordered_set<glm::ivec3, ivec3_hash> solidSet;
+    auto addVec = [&](const std::vector<glm::vec3>& vec) {
+        for (const auto& block : vec) {
+            solidSet.insert(glm::ivec3(block));
+        }
+        };
+    // Consider these types as solid:
+    addVec(chunk.grassPositions);
+    addVec(chunk.dirtPositions);
+    addVec(chunk.deepStonePositions);
+    addVec(chunk.treeTrunkPositions);
+    addVec(chunk.fallenTreeTrunkPositions);
+    addVec(chunk.oakTrunkPositions);
+    addVec(chunk.ancientTrunkPositions);
+    for (const auto& b : chunk.branchPositions) {
+        solidSet.insert(glm::ivec3(b.x, b.y, b.z));
+    }
+
+    auto isOccluded = [&](const glm::ivec3& ipos) -> bool {
+        glm::ivec3 neighbors[6] = {
+           glm::ivec3(ipos.x + 1, ipos.y, ipos.z),
+           glm::ivec3(ipos.x - 1, ipos.y, ipos.z),
+           glm::ivec3(ipos.x, ipos.y + 1, ipos.z),
+           glm::ivec3(ipos.x, ipos.y - 1, ipos.z),
+           glm::ivec3(ipos.x, ipos.y, ipos.z + 1),
+           glm::ivec3(ipos.x, ipos.y, ipos.z - 1)
+        };
+        for (int i = 0; i < 6; i++) {
+            if (solidSet.find(neighbors[i]) == solidSet.end())
+                return false;
+        }
+        return true;
+        };
+
+    auto filterVector = [&](std::vector<glm::vec3>& vec) {
+        std::vector<glm::vec3> newVec;
+        for (auto& block : vec) {
+            glm::ivec3 ipos = glm::ivec3(block);
+            if (!isOccluded(ipos))
+                newVec.push_back(block);
+        }
+        vec = newVec;
+        };
+
+    auto filterVector4 = [&](std::vector<glm::vec4>& vec) {
+        std::vector<glm::vec4> newVec;
+        for (auto& block : vec) {
+            glm::ivec3 ipos = glm::ivec3(block.x, block.y, block.z);
+            if (!isOccluded(ipos))
+                newVec.push_back(block);
+        }
+        vec = newVec;
+        };
+
+    filterVector(chunk.grassPositions);
+    filterVector(chunk.dirtPositions);
+    filterVector(chunk.deepStonePositions);
+    filterVector(chunk.treeTrunkPositions);
+    filterVector(chunk.fallenTreeTrunkPositions);
+    filterVector(chunk.oakTrunkPositions);
+    filterVector(chunk.ancientTrunkPositions);
+    filterVector4(chunk.branchPositions);
+}
+
 // ==================== Raycasting ====================
 glm::ivec3 raycastForBlock(bool place) {
     float t = 0.0f;
-    float stoneTol = 0.5f, trunkTol = 0.5f, leafTol = 0.6f, waterTol = 0.5f;
-    float lilyTol = 0.5f, fallenTol = 0.5f, oakTrunkTol = 0.5f, oakLeafTol = 0.6f;
-    float leafPileTol = 0.5f, bushTol = 0.5f;
+    const float stoneTol = 0.5f,
+        trunkTol = 0.5f,
+        leafTol = 0.6f,
+        waterTol = 0.5f;
+    const float lilyTol = 0.5f,
+        fallenTol = 0.5f,
+        oakTrunkTol = 0.5f,
+        oakLeafTol = 0.6f;
+    const float leafPileTol = 0.5f,
+        bushTol = 0.5f;
     while (t < 5.0f) {
         glm::vec3 p = cameraPos + t * cameraFront;
-        glm::ivec3 candidate = glm::ivec3(std::round(p.x), std::round(p.y), std::round(p.z));
+        glm::ivec3 candidate(std::round(p.x), std::round(p.y), std::round(p.z));
         if (blockModifications.find(candidate) != blockModifications.end() && blockModifications[candidate] == -1) {
             t += 0.1f;
             continue;
         }
         bool exists = false;
-        int chunkX = static_cast<int>(std::floor(candidate.x / static_cast<float>(CHUNK_SIZE)));
-        int chunkZ = static_cast<int>(std::floor(candidate.z / static_cast<float>(CHUNK_SIZE)));
+        int chunkX = static_cast<int>(std::floor(candidate.x / (float)CHUNK_SIZE));
+        int chunkZ = static_cast<int>(std::floor(candidate.z / (float)CHUNK_SIZE));
         ChunkPos cp{ chunkX, chunkZ };
         if (chunks.find(cp) != chunks.end()) {
             Chunk& ch = chunks[cp];
-            for (const auto& pos : ch.waterPositions)
-                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), waterTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.grassPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.dirtPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.deepStonePositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.lavaPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.treeTrunkPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), trunkTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.treeLeafPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.firLeafPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.waterLilyPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), lilyTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.fallenTreeTrunkPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), fallenTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.oakTrunkPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), oakTrunkTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.oakLeafPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), oakLeafTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.leafPilePositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafPileTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.bushSmallPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), bushTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.bushMediumPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), bushTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.bushLargePositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), bushTol))) { exists = true; break; }
+            auto checkVec = [&](const std::vector<glm::vec3>& vec, float tol) {
+                for (const auto& v : vec)
+                    if (glm::all(glm::epsilonEqual(v, glm::vec3(candidate), tol)))
+                        return true;
+                return false;
+                };
+            if (checkVec(ch.waterPositions, waterTol) ||
+                checkVec(ch.grassPositions, stoneTol) ||
+                checkVec(ch.dirtPositions, stoneTol) ||
+                checkVec(ch.deepStonePositions, stoneTol) ||
+                checkVec(ch.lavaPositions, stoneTol) ||
+                checkVec(ch.treeTrunkPositions, trunkTol) ||
+                checkVec(ch.treeLeafPositions, leafTol) ||
+                checkVec(ch.firLeafPositions, leafTol) ||
+                checkVec(ch.waterLilyPositions, lilyTol) ||
+                checkVec(ch.fallenTreeTrunkPositions, fallenTol) ||
+                checkVec(ch.oakTrunkPositions, oakTrunkTol) ||
+                checkVec(ch.oakLeafPositions, oakLeafTol) ||
+                checkVec(ch.leafPilePositions, leafPileTol) ||
+                checkVec(ch.bushSmallPositions, bushTol) ||
+                checkVec(ch.bushMediumPositions, bushTol) ||
+                checkVec(ch.bushLargePositions, bushTol))
+                exists = true;
         }
         TerrainPoint terrain = getTerrainHeight(p.x, p.z);
         if (!exists && terrain.isLand && candidate.y <= static_cast<int>(std::floor(terrain.height)))
@@ -528,8 +535,8 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
             glm::ivec3 pos = raycastForBlock(false);
             if (pos.x != -10000) {
                 blockModifications[pos] = -1;
-                int chunkX = static_cast<int>(std::floor(pos.x / static_cast<float>(CHUNK_SIZE)));
-                int chunkZ = static_cast<int>(std::floor(pos.z / static_cast<float>(CHUNK_SIZE)));
+                int chunkX = static_cast<int>(std::floor(pos.x / (float)CHUNK_SIZE));
+                int chunkZ = static_cast<int>(std::floor(pos.z / (float)CHUNK_SIZE));
                 ChunkPos cp{ chunkX, chunkZ };
                 if (chunks.find(cp) != chunks.end())
                     chunks[cp].needsMeshUpdate = true;
@@ -538,17 +545,16 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
         else if (button == GLFW_MOUSE_BUTTON_RIGHT) {
             glm::ivec3 hitBlock = raycastForBlock(false);
             if (hitBlock.x != -10000) {
-                int chunkX = static_cast<int>(std::floor(hitBlock.x / static_cast<float>(CHUNK_SIZE)));
-                int chunkZ = static_cast<int>(std::floor(hitBlock.z / static_cast<float>(CHUNK_SIZE)));
+                int chunkX = static_cast<int>(std::floor(hitBlock.x / (float)CHUNK_SIZE));
+                int chunkZ = static_cast<int>(std::floor(hitBlock.z / (float)CHUNK_SIZE));
                 ChunkPos cp{ chunkX, chunkZ };
                 int blockTypeToPlace = 0;
                 if (chunks.find(cp) != chunks.end()) {
                     Chunk& ch = chunks[cp];
                     auto within = [&](const std::vector<glm::vec3>& vec, float tol) -> bool {
-                        for (const auto& v : vec) {
+                        for (const auto& v : vec)
                             if (glm::all(glm::epsilonEqual(v, glm::vec3(hitBlock), tol)))
                                 return true;
-                        }
                         return false;
                         };
                     if (within(ch.treeTrunkPositions, 0.5f))
@@ -587,8 +593,8 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
                 glm::ivec3 pos = raycastForBlock(true);
                 if (pos.x != -10000) {
                     blockModifications[pos] = blockTypeToPlace;
-                    int placeChunkX = static_cast<int>(std::floor(pos.x / static_cast<float>(CHUNK_SIZE)));
-                    int placeChunkZ = static_cast<int>(std::floor(pos.z / static_cast<float>(CHUNK_SIZE)));
+                    int placeChunkX = static_cast<int>(std::floor(pos.x / (float)CHUNK_SIZE));
+                    int placeChunkZ = static_cast<int>(std::floor(pos.z / (float)CHUNK_SIZE));
                     ChunkPos cp2{ placeChunkX, placeChunkZ };
                     if (chunks.find(cp2) != chunks.end())
                         chunks[cp2].needsMeshUpdate = true;
@@ -597,6 +603,7 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
         }
     }
 }
+const int MIN_Y = -4;
 
 // ==================== Quadtree for Spatial Partitioning ====================
 struct QuadtreeItem { ChunkPos pos; Chunk* chunk; };
@@ -669,9 +676,8 @@ struct Quadtree {
 
 // ==================== Chunk Mesh Generation ====================
 void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
-    if (!chunk.needsMeshUpdate)
-        return;
-    // Clear old data
+    if (!chunk.needsMeshUpdate) return;
+    // Clear previous data.
     chunk.waterPositions.clear();
     chunk.grassPositions.clear();
     chunk.dirtPositions.clear();
@@ -694,16 +700,14 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     chunk.ancientBranchPositions.clear();
     chunk.auroraPositions.clear();
 
-    // ------------------ For Water Cells ------------------
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
             double worldZ = chunkZ * CHUNK_SIZE + z;
             TerrainPoint terrain = getTerrainHeight(worldX, worldZ);
             if (!terrain.isLand) {
-                // For water cells, add a water surface at y = 0.
-                chunk.waterPositions.push_back(glm::vec3(worldX, 0.0f, worldZ));
-                // Place water lilies as before.
+                // For water cells, use the flat water level.
+                chunk.waterPositions.push_back(glm::vec3(worldX, terrain.height, worldZ));
                 if (x > 3 && x < CHUNK_SIZE - 3 && z > 3 && z < CHUNK_SIZE - 3 &&
                     (x % 7 == 3) && (z % 7 == 3)) {
                     bool canPlaceLily = true;
@@ -715,68 +719,38 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         if (!canPlaceLily) break;
                     }
                     if (canPlaceLily) {
-                        int hashVal = std::abs((static_cast<int>(worldX) * 91321) ^ (static_cast<int>(worldZ) * 7817));
+                        int hashVal = std::abs((int)worldX * 91321 ^ (int)worldZ * 7817);
                         if (hashVal % 100 < 1) {
                             for (int dx = -7; dx < 7; dx++) {
                                 for (int dz = -7; dz < 7; dz++) {
-                                    chunk.waterLilyPositions.push_back(glm::vec3(worldX + dx, 0.2f, worldZ + dz));
+                                    chunk.waterLilyPositions.push_back(glm::vec3(worldX + dx, terrain.height + 0.2f, worldZ + dz));
                                 }
                             }
                         }
                     }
                 }
-                // For water cells, generate deep stone underneath from y = -1 to MIN_Y.
-                for (int y = -1; y >= MIN_Y; y--) {
-                    double caveVal = caveNoise.noise(worldX * CAVE_SCALE, y * CAVE_SCALE, worldZ * CAVE_SCALE);
-                    if (caveVal < CAVE_THRESHOLD) {
-                        chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
-                    }
-                    else {
-                        if (y < 0) {
-                            chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
-                        }
-                    }
+                int seaLevelInt = static_cast<int>(terrain.height);
+                // Only add four stone layers directly below the water.
+                for (int i = 1; i <= 4; i++) {
+                    int y = seaLevelInt - i;
+                    chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
                 }
             }
             else {
                 int groundHeight = static_cast<int>(std::floor(terrain.height));
-                // Land cells: generate layered ground.
-                chunk.grassPositions.push_back(glm::vec3(worldX, groundHeight, worldZ)); // Grass layer.
-                chunk.dirtPositions.push_back(glm::vec3(worldX, groundHeight - 1, worldZ)); // Dirt layer.
-                // ------------------ Unified Cave Generation for Land ------------------
-                // For every cell from (groundHeight - 2) down to MIN_Y, carve out caves
-                // except above sea level (y >= 0), which should always be stone.
-                for (int y = groundHeight - 2; y >= MIN_Y; y--) {
-                    if (y >= 0) {
-                        // Above sea level, do not carve out caves; simply place stone.
-                        chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
-                    }
-                    else {
-                        double caveVal = caveNoise.noise(worldX * UNIFIED_CAVE_SCALE, y * UNIFIED_CAVE_SCALE, worldZ * UNIFIED_CAVE_SCALE);
-                        if (caveVal < UNIFIED_CAVE_THRESHOLD) {
-                            // If the unified cave noise is very low, place stone.
-                            chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
-                        }
-                        else {
-                            // Otherwise, carve out a cave.
-                            // Use a secondary noise function to decide the liquid type.
-                            double liquidVal = lavaCaveNoise.noise(worldX * LIQUID_TYPE_SCALE, y * LIQUID_TYPE_SCALE, worldZ * LIQUID_TYPE_SCALE);
-                            // If liquidVal is below 0.3, fill with water; otherwise, with lava.
-                            if (liquidVal < 0.3)
-                                chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
-                            else
-                                chunk.lavaPositions.push_back(glm::vec3(worldX, y, worldZ));
-                        }
-                    }
+                chunk.grassPositions.push_back(glm::vec3(worldX, groundHeight, worldZ));
+                chunk.dirtPositions.push_back(glm::vec3(worldX, groundHeight - 1, worldZ));
+                // Only add four stone layers directly below the dirt layer.
+                for (int i = 2; i <= 5; i++) {
+                    int y = groundHeight - i;
+                    chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
                 }
-                // ------------------ Tree Generation ------------------
-                if (terrain.height > 2.0) {
+                {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
-
-                    // --- Pine Tree Generation ---
-                    int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
-                    glm::vec3 pineBase = glm::vec3(worldX, groundHeight + 1, worldZ);
+                    // Pine Tree Generation
+                    int hashValPine = std::abs(intWorldX * 73856093 ^ intWorldZ * 19349663);
+                    glm::vec3 pineBase(worldX, groundHeight + 1, worldZ);
                     if (hashValPine % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, pineBase)) {
                         int trunkHeight = 60, trunkThickness = 4;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -789,10 +763,9 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         std::vector<glm::vec3> pineCanopy = generatePineCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                         chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                     }
-
-                    // --- Fir Tree Generation ---
-                    int hashValFir = std::abs((intWorldX * 83492791) ^ (intWorldZ * 19349663));
-                    glm::vec3 firBase = glm::vec3(worldX, groundHeight + 1, worldZ);
+                    // Fir Tree Generation
+                    int hashValFir = std::abs(intWorldX * 83492791 ^ intWorldZ * 19349663);
+                    glm::vec3 firBase(worldX, groundHeight + 1, worldZ);
                     if (hashValFir % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, firBase)) {
                         int trunkHeight = 40, trunkThickness = 3;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -805,10 +778,9 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         std::vector<glm::vec3> firCanopy = generateFirCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                         chunk.firLeafPositions.insert(chunk.firLeafPositions.end(), firCanopy.begin(), firCanopy.end());
                     }
-
-                    // --- Oak Tree Generation ---
-                    int hashValOak = std::abs((intWorldX * 92821) ^ (intWorldZ * 123457));
-                    glm::vec3 oakBase = glm::vec3(worldX, groundHeight + 1, worldZ);
+                    // Oak Tree Generation
+                    int hashValOak = std::abs(intWorldX * 92821 ^ intWorldZ * 123457);
+                    glm::vec3 oakBase(worldX, groundHeight + 1, worldZ);
                     if (hashValOak % 1000 < 1 && !treeCollision(chunk.oakTrunkPositions, oakBase)) {
                         int trunkHeight = 7, trunkThickness = 2;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -821,10 +793,9 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         std::vector<glm::vec3> oakCanopy = generateOakCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                         chunk.oakLeafPositions.insert(chunk.oakLeafPositions.end(), oakCanopy.begin(), oakCanopy.end());
                     }
-
-                    // --- Ancient Tree Generation ---
-                    int hashValAncient = std::abs((intWorldX * 112233) ^ (intWorldZ * 445566));
-                    glm::vec3 ancientBase = glm::vec3(worldX, groundHeight + 1, worldZ);
+                    // Ancient Tree Generation
+                    int hashValAncient = std::abs(intWorldX * 112233 ^ intWorldZ * 445566);
+                    glm::vec3 ancientBase(worldX, groundHeight + 1, worldZ);
                     if (hashValAncient % 3000 < 1 && !treeCollision(chunk.ancientTrunkPositions, ancientBase)) {
                         int trunkHeight = 30, trunkThickness = 3;
                         for (int i = 1; i <= trunkHeight; i++) {
@@ -839,41 +810,35 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         for (int dy = -static_cast<int>(canopyRadius); dy <= static_cast<int>(canopyRadius); dy++) {
                             for (int dx = -static_cast<int>(canopyRadius); dx <= static_cast<int>(canopyRadius); dx++) {
                                 for (int dz = -static_cast<int>(canopyRadius); dz <= static_cast<int>(canopyRadius); dz++) {
-                                    float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
-                                    if (dist < canopyRadius) {
+                                    if (std::sqrt(dx * dx + dy * dy + dz * dz) < canopyRadius)
                                         chunk.ancientLeafPositions.push_back(glm::vec3(worldX + trunkThickness / 2.0f + dx, centerY + dy, worldZ + trunkThickness / 2.0f + dz));
-                                    }
                                 }
                             }
                         }
-                        int branchBaseHeights[4] = { 7, 13, 19, 25 };
+                        int branchHeights[4] = { 7, 13, 19, 25 };
                         for (int b = 0; b < 4; b++) {
                             int randomOffset = (rand() % 3) - 1;
-                            int branchStart = branchBaseHeights[b] + randomOffset;
+                            int branchStart = branchHeights[b] + randomOffset;
                             float branchRot = (b * 90.0f) * (3.14159f / 180.0f);
-                            glm::vec3 branchStartPos = glm::vec3(worldX + trunkThickness / 2.0f, groundHeight + branchStart, worldZ + trunkThickness / 2.0f);
+                            glm::vec3 branchStartPos(worldX + trunkThickness / 2.0f, groundHeight + branchStart, worldZ + trunkThickness / 2.0f);
                             int branchLength = 10 + (rand() % 3);
                             for (int i = 1; i <= branchLength; i++) {
                                 float bx = cos(branchRot) * i;
                                 float bz = sin(branchRot) * i;
-                                glm::vec3 branchBlockPos = branchStartPos + glm::vec3(bx, 0, bz);
-                                chunk.ancientBranchPositions.push_back(branchBlockPos);
+                                chunk.ancientBranchPositions.push_back(branchStartPos + glm::vec3(bx, 0, bz));
                             }
                             glm::vec3 tip = branchStartPos + glm::vec3(cos(branchRot) * (branchLength + 1), 0, sin(branchRot) * (branchLength + 1));
                             for (int dx = -1; dx <= 1; dx++) {
                                 for (int dy = -1; dy <= 1; dy++) {
                                     for (int dz = -1; dz <= 1; dz++) {
-                                        if (glm::length(glm::vec3(dx, dy, dz)) < 1.5f) {
+                                        if (glm::length(glm::vec3(dx, dy, dz)) < 1.5f)
                                             chunk.ancientLeafPositions.push_back(tip + glm::vec3(dx, dy, dz));
-                                        }
                                     }
                                 }
                             }
                         }
                     }
-
-                    // --- Fallen Log Generation (existing) ---
-                    int hashValFallen = std::abs((intWorldX * 92821) ^ (intWorldZ * 68917));
+                    int hashValFallen = std::abs(intWorldX * 92821 ^ intWorldZ * 68917);
                     bool nearWater = false;
                     for (int dx = -1; dx <= 1; dx++) {
                         for (int dz = -1; dz <= 1; dz++) {
@@ -916,23 +881,17 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             }
                         }
                     }
-
-                    // --- Leaf Piles Generation (existing) ---
-                    int hashValPile = std::abs((intWorldX * 412871) ^ (intWorldZ * 167591));
+                    int hashValPile = std::abs(intWorldX * 412871 ^ intWorldZ * 167591);
                     if (hashValPile % 300 < 1) {
                         int pileSize = (hashValPile % 4) + 3;
                         for (int i = 0; i < pileSize; i++) {
                             int px = (hashValPile + i * 13) % 3 - 1;
                             int pz = (hashValPile + i * 7) % 3 - 1;
-                            float placeX = worldX + px;
-                            float placeZ = worldZ + pz;
-                            chunk.leafPilePositions.push_back(glm::vec3(placeX, groundHeight + 1, worldZ + pz));
+                            chunk.leafPilePositions.push_back(glm::vec3(worldX + px, groundHeight + 1, worldZ + pz));
                         }
                     }
-
-                    // --- Enhanced Bush Generation ---
                     {
-                        int hashValBushSmall = std::abs((intWorldX * 17771) ^ (intWorldZ * 55117));
+                        int hashValBushSmall = std::abs(intWorldX * 17771 ^ intWorldZ * 55117);
                         if (hashValBushSmall % 700 < 1) {
                             int centerY = groundHeight + 1;
                             float radius = 1.0f;
@@ -943,7 +902,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 }
                             }
                         }
-                        int hashValBushMed = std::abs((intWorldX * 18323) ^ (intWorldZ * 51511));
+                        int hashValBushMed = std::abs(intWorldX * 18323 ^ intWorldZ * 51511);
                         if (hashValBushMed % 1000 < 2) {
                             int centerY = groundHeight + 1;
                             float radius = 2.0f;
@@ -954,7 +913,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 }
                             }
                         }
-                        int hashValBushLarge = std::abs((intWorldX * 23719) ^ (intWorldZ * 41389));
+                        int hashValBushLarge = std::abs(intWorldX * 23719 ^ intWorldZ * 41389);
                         if (hashValBushLarge % 1200 < 1) {
                             int centerY = groundHeight + 1;
                             float radius = 3.0f;
@@ -966,10 +925,8 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             }
                         }
                     }
-
-                    // --- Ground Branches Generation (existing) ---
                     {
-                        int hashValBranch = std::abs((intWorldX * 12345) ^ (intWorldZ * 6789));
+                        int hashValBranch = std::abs(intWorldX * 12345 ^ intWorldZ * 6789);
                         if (hashValBranch % 1000 < 1) {
                             float rot = (hashValBranch % 360) * (3.14159f / 180.0f);
                             chunk.branchPositions.push_back(glm::vec4(worldX + 0.5f, groundHeight + 0.5f, worldZ + 0.5f, rot));
@@ -979,20 +936,17 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
             }
         }
     }
-    // --- NEW: Generate Aurora Blocks in the Sky (block type 19) ---
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
             double worldZ = chunkZ * CHUNK_SIZE + z;
             for (int y = 135; y <= 136; y++) {
                 double n = auroraNoise.noise(worldX * 0.1, y * 0.1, worldZ * 0.1);
-                if (n > 0.44) {
+                if (n > 0.44)
                     chunk.auroraPositions.push_back(glm::vec3(worldX, y, worldZ));
-                }
             }
         }
     }
-    // Apply block modifications.
     for (const auto& mod : blockModifications) {
         glm::ivec3 pos = mod.first;
         int modType = mod.second;
@@ -1025,12 +979,11 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
             }
             else {
                 auto existsIn = [&](const std::vector<glm::vec3>& vec) -> bool {
-                    for (const auto& v : vec) {
+                    for (const auto& v : vec)
                         if (std::abs(v.x - pos.x) < 0.1f &&
                             std::abs(v.y - pos.y) < 0.1f &&
                             std::abs(v.z - pos.z) < 0.1f)
                             return true;
-                    }
                     return false;
                     };
                 if (!existsIn(chunk.grassPositions) &&
@@ -1065,21 +1018,21 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     case 13: chunk.bushLargePositions.push_back(glm::vec3(pos));  break;
                     case 15: chunk.dirtPositions.push_back(glm::vec3(pos)); break;
                     case 20: chunk.deepStonePositions.push_back(glm::vec3(pos)); break;
-                    default:
-                        chunk.grassPositions.push_back(glm::vec3(pos));
-                        break;
+                    default: chunk.grassPositions.push_back(glm::vec3(pos)); break;
                     }
                 }
             }
         }
     }
+    // --- NEW: Apply Occlusion Culling for solid blocks ---
+    applyOcclusionCulling(chunk);
     chunk.needsMeshUpdate = false;
 }
 
 // ==================== Chunk Update ====================
 void updateChunks() {
-    int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
-    int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
+    int playerChunkX = static_cast<int>(std::floor(cameraPos.x / (float)CHUNK_SIZE));
+    int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / (float)CHUNK_SIZE));
     int renderDistance = static_cast<int>(RENDER_DISTANCE);
     for (auto it = chunks.begin(); it != chunks.end();) {
         int dx = std::abs(it->first.x - playerChunkX);
@@ -1092,9 +1045,8 @@ void updateChunks() {
     for (int x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
         for (int z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
             ChunkPos pos{ x, z };
-            if (chunks.find(pos) == chunks.end()) {
+            if (chunks.find(pos) == chunks.end())
                 chunks[pos] = Chunk();
-            }
             generateChunkMesh(chunks[pos], x, z);
         }
     }
@@ -1111,8 +1063,8 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
     const float sensitivity = 0.1f;
     xoffset *= sensitivity; yoffset *= sensitivity;
     yaw += xoffset; pitch += yoffset;
-    pitch = std::min(pitch, 89.0f);
-    pitch = std::max(pitch, -89.0f);
+    if (pitch > 89.0f) pitch = 89.0f;
+    if (pitch < -89.0f) pitch = -89.0f;
     glm::vec3 front;
     front.x = std::cos(glm::radians(yaw)) * std::cos(glm::radians(pitch));
     front.y = std::sin(glm::radians(pitch));
@@ -1139,30 +1091,24 @@ void processInput(GLFWwindow* window) {
 }
 
 // ==================== VIEW (Rendering) ====================
-// The vertex shader now also accepts a time uniform and, for blockType 19 (aurora),
-// applies a slight animated vertical oscillation to the block positions. The blockColors array
-// has been increased to 22 elements to include the new lava block (block type 21).
-// ------------------------- Shader Sources -------------------------
+// Vertex Shader Source (modified to output block elevation)
 const char* vertexShaderSource = R"(
    #version 330 core
    layout (location = 0) in vec3 aPos;
    layout (location = 1) in vec2 aTexCoord;
-   // For non-branch instancing, location 2 holds a vec3 offset.
-   // For branch types, location 2 holds a vec3 offset and location 3 holds a float rotation.
+   layout (location = 2) in vec3 aOffset;
+   layout (location = 3) in float aRotation;
    out vec2 TexCoord;
    out vec3 ourColor;
    out float instanceDistance;
+   out float elev; // New output: block elevation in world space
    uniform mat4 model;
    uniform mat4 view;
    uniform mat4 projection;
    uniform int blockType;
-   // Array of 22 block colors.
    uniform vec3 blockColors[22];
-   // Atmospheric perspective uniform.
    uniform vec3 cameraPos;
    uniform float time;
-   layout (location = 2) in vec3 aOffset;
-   layout (location = 3) in float aRotation;
    void main(){
        vec3 pos = aPos;
        if(blockType != 14 && blockType != 18)
@@ -1183,34 +1129,32 @@ const char* vertexShaderSource = R"(
                pos += aOffset;
            }
        }
-       // For aurora blocks, add a slight animated vertical oscillation.
-       if(blockType == 19){
+       // Compute world position and output its Y component as elevation.
+       vec4 worldPos = model * vec4(pos, 1.0);
+       elev = worldPos.y;
+       if(blockType == 19)
            pos.y += sin(time + aOffset.x * 0.1) * 0.5;
-       }
-       gl_Position = projection * view * model * vec4(pos, 1.0);
+       gl_Position = projection * view * worldPos;
        ourColor = blockColors[blockType];
        TexCoord = aTexCoord;
-       if(blockType != 14 && blockType != 18){
-           if(gl_InstanceID > 0)
-               instanceDistance = length(aOffset - cameraPos);
-           else
-               instanceDistance = length(vec3(model[3]) - cameraPos);
-       } else {
+       if(blockType != 14 && blockType != 18)
+           instanceDistance = (gl_InstanceID > 0) ? length(aOffset - cameraPos) : length(vec3(model[3]) - cameraPos);
+       else
            instanceDistance = length(aOffset - cameraPos);
-       }
    }
 )";
 
+// Fragment Shader Source (modified to add an elevation-based offset)
 const char* fragmentShaderSource = R"(
    #version 330 core
    in vec2 TexCoord;
    in vec3 ourColor;
    in float instanceDistance;
+   in float elev; // Received elevation from vertex shader
    out vec4 FragColor;
    uniform int blockType;
    uniform vec3 blockColors[22];
    void main(){
-       // For aurora blocks (blockType 19), output translucent magenta.
        if(blockType == 19){
            FragColor = vec4(ourColor, 0.1);
            return;
@@ -1222,8 +1166,11 @@ const char* fragmentShaderSource = R"(
            FragColor = vec4(0.0, 0.0, 0.0, 1.0);
        else {
            float factor = instanceDistance / 100.0;
-           vec3 offset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
-           vec3 finalColor = ourColor + offset;
+           vec3 distanceOffset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
+           // Compute an offset based on the block's elevation.
+           float elevFactor = elev / 100.0;
+           vec3 elevOffset = vec3(0.05 * elevFactor, 0.05 * elevFactor, 0.07 * elevFactor);
+           vec3 finalColor = ourColor + distanceOffset + elevOffset;
            finalColor = clamp(finalColor, 0.0, 1.0);
            FragColor = vec4(finalColor, 1.0);
        }
@@ -1262,13 +1209,13 @@ float cubeVertices[] = {
   -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
   -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
   // Top face
--0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
- 0.5f,  0.5f,  0.5f,     1.0f, 0.0f,
- 0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
- 0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
--0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
--0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
-// Bottom face
+ -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+  0.5f,  0.5f,  0.5f,     1.0f, 0.0f,
+  0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+  0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+ -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
+ -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+ // Bottom face
 -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
  0.5f, -0.5f, -0.5f,     1.0f, 0.0f,
  0.5f, -0.5f,  0.5f,     1.0f, 1.0f,
@@ -1301,7 +1248,6 @@ int main() {
         std::cout << "Failed to initialize GLAD\n";
         return -1;
     }
-
     // ------------------------- Shader Compilation -------------------------
     unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
@@ -1342,15 +1288,12 @@ int main() {
     }
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
-
     // ------------------------- Setup VAOs and VBOs -------------------------
     unsigned int VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
     unsigned int oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
     unsigned int ancientTrunkVAO, ancientLeafVAO;
     unsigned int branchVAO, ancientBranchVAO;
-    // New VAOs for dirt, deep stone, and lava.
     unsigned int dirtVAO, deepStoneVAO, lavaVAO;
-
     unsigned int VBO, instanceVBO;
     glGenVertexArrays(1, &VAO);
     glGenVertexArrays(1, &redVAO);
@@ -1361,32 +1304,25 @@ int main() {
     glGenVertexArrays(1, &waterLilyVAO);
     glGenVertexArrays(1, &fallenTreeVAO);
     glGenVertexArrays(1, &firLeafVAO);
-
     glGenVertexArrays(1, &oakTrunkVAO);
     glGenVertexArrays(1, &oakLeafVAO);
     glGenVertexArrays(1, &leafPileVAO);
     glGenVertexArrays(1, &bushSmallVAO);
     glGenVertexArrays(1, &bushMediumVAO);
     glGenVertexArrays(1, &bushLargeVAO);
-
     glGenVertexArrays(1, &ancientTrunkVAO);
     glGenVertexArrays(1, &ancientLeafVAO);
-
     glGenVertexArrays(1, &branchVAO);
     glGenVertexArrays(1, &ancientBranchVAO);
-
     glGenVertexArrays(1, &dirtVAO);
     glGenVertexArrays(1, &deepStoneVAO);
     glGenVertexArrays(1, &lavaVAO);
-
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &instanceVBO);
     GLuint branchInstanceVBO, ancientBranchInstanceVBO;
     glGenBuffers(1, &branchInstanceVBO);
     glGenBuffers(1, &ancientBranchInstanceVBO);
-
-    // Helper: setup a generic cube VAO for non-branch blocks.
-    auto setupVAO = [&](unsigned int vao, bool instanced) {
+    auto setupVAOFunc = [&](unsigned int vao, bool instanced) {
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
@@ -1401,28 +1337,26 @@ int main() {
             glVertexAttribDivisor(2, 1);
         }
         };
-    setupVAO(VAO, false);
-    setupVAO(redVAO, false);
-    setupVAO(waterVAO, true);
-    setupVAO(grassVAO, true);
-    setupVAO(treeTrunkVAO, true);
-    setupVAO(treeLeafVAO, true);
-    setupVAO(waterLilyVAO, true);
-    setupVAO(fallenTreeVAO, true);
-    setupVAO(firLeafVAO, true);
-    setupVAO(oakTrunkVAO, true);
-    setupVAO(oakLeafVAO, true);
-    setupVAO(leafPileVAO, true);
-    setupVAO(bushSmallVAO, true);
-    setupVAO(bushMediumVAO, true);
-    setupVAO(bushLargeVAO, true);
-    setupVAO(ancientTrunkVAO, true);
-    setupVAO(ancientLeafVAO, true);
-    setupVAO(dirtVAO, true);
-    setupVAO(deepStoneVAO, true);
-    setupVAO(lavaVAO, true);
-
-    // Setup VAO for ground branches (block type 14)
+    setupVAOFunc(VAO, false);
+    setupVAOFunc(redVAO, false);
+    setupVAOFunc(waterVAO, true);
+    setupVAOFunc(grassVAO, true);
+    setupVAOFunc(treeTrunkVAO, true);
+    setupVAOFunc(treeLeafVAO, true);
+    setupVAOFunc(waterLilyVAO, true);
+    setupVAOFunc(fallenTreeVAO, true);
+    setupVAOFunc(firLeafVAO, true);
+    setupVAOFunc(oakTrunkVAO, true);
+    setupVAOFunc(oakLeafVAO, true);
+    setupVAOFunc(leafPileVAO, true);
+    setupVAOFunc(bushSmallVAO, true);
+    setupVAOFunc(bushMediumVAO, true);
+    setupVAOFunc(bushLargeVAO, true);
+    setupVAOFunc(ancientTrunkVAO, true);
+    setupVAOFunc(ancientLeafVAO, true);
+    setupVAOFunc(dirtVAO, true);
+    setupVAOFunc(deepStoneVAO, true);
+    setupVAOFunc(lavaVAO, true);
     glBindVertexArray(branchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
@@ -1437,8 +1371,6 @@ int main() {
     glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)(sizeof(glm::vec3)));
     glEnableVertexAttribArray(3);
     glVertexAttribDivisor(3, 1);
-
-    // Setup VAO for ancient branches (block type 18) as full blocks.
     glBindVertexArray(ancientBranchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
@@ -1450,12 +1382,9 @@ int main() {
     glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
     glEnableVertexAttribArray(2);
     glVertexAttribDivisor(2, 1);
-
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // ------------------------- Main Render Loop -------------------------
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -1473,36 +1402,32 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
-
-        // Define 22 block colors.
         glm::vec3 blockColors[22];
-        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f); // Grass (block type 0)
-        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);     // Water (block type 1)
-        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Pine/Fir trunk (block type 2)
-        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);  // Pine leaves (block type 3)
-        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);     // Origin debug (block type 4)
-        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);     // Water lily (block type 5)
-        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);  // Fallen log (block type 6)
-        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);  // Fir leaves (block type 7)
-        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);  // Oak trunk (block type 8)
-        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);   // Oak leaves (block type 9)
-        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);  // Leaf pile (block type 10)
-        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);  // Bush small (block type 11)
-        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);  // Bush medium (block type 12)
-        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);   // Bush large (block type 13)
-        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);     // Ground branch (block type 14)
-        blockColors[15] = glm::vec3(0.44f, 0.39f, 0.32f);   // Dirt (block type 15)
-        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);    // Ancient trunk (block type 16)
-        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);     // Ancient leaves (block type 17)
-        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);     // Ancient branch (block type 18)
-        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);     // Aurora blocks (block type 19)
-        blockColors[20] = glm::vec3(0.35f, 0.5f, 0.39f);      // Deep Stone (block type 20)
-        blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);      // Lava (block type 21, orange)
+        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f);
+        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);
+        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);
+        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);
+        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);
+        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);
+        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);
+        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);
+        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);
+        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);
+        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);
+        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);
+        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);
+        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);
+        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);
+        blockColors[15] = glm::vec3(0.44f, 0.39f, 0.32f);
+        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);
+        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);
+        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);
+        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);
+        blockColors[20] = glm::vec3(0.35f, 0.5f, 0.39f);
+        blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);
         glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
-
-        // Build quadtree over chunks.
-        int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
-        int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
+        int playerChunkX = static_cast<int>(std::floor(cameraPos.x / (float)CHUNK_SIZE));
+        int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / (float)CHUNK_SIZE));
         int qtMinX = playerChunkX - static_cast<int>(RENDER_DISTANCE);
         int qtMaxX = playerChunkX + static_cast<int>(RENDER_DISTANCE);
         int qtMinZ = playerChunkZ - static_cast<int>(RENDER_DISTANCE);
@@ -1514,30 +1439,13 @@ int main() {
                 qt.insert(pos, &entry.second);
         }
         std::vector<Chunk*> visibleChunks = qt.query(extractFrustumPlanes(projection * view));
-
-        // Collect instance data.
-        std::vector<glm::vec3> globalGrassInstances;
-        std::vector<glm::vec3> globalDirtInstances;
-        std::vector<glm::vec3> globalDeepStoneInstances;
-        std::vector<glm::vec3> globalWaterInstances;
-        std::vector<glm::vec3> globalLavaInstances;
-        std::vector<glm::vec3> globalTreeTrunkInstances;
-        std::vector<glm::vec3> globalPineLeafInstances;
-        std::vector<glm::vec3> globalFirLeafInstances;
-        std::vector<glm::vec3> globalWaterLilyInstances;
-        std::vector<glm::vec3> globalFallenTreeTrunkInstances;
-        std::vector<glm::vec3> globalOakTrunkInstances;
-        std::vector<glm::vec3> globalOakLeafInstances;
-        std::vector<glm::vec3> globalLeafPileInstances;
-        std::vector<glm::vec3> globalBushSmallInstances;
-        std::vector<glm::vec3> globalBushMediumInstances;
-        std::vector<glm::vec3> globalBushLargeInstances;
-        std::vector<glm::vec3> globalAncientTrunkInstances;
-        std::vector<glm::vec3> globalAncientLeafInstances;
-        std::vector<glm::vec3> globalAncientBranchInstances;
+        std::vector<glm::vec3> globalGrassInstances, globalDirtInstances, globalDeepStoneInstances, globalWaterInstances, globalLavaInstances;
+        std::vector<glm::vec3> globalTreeTrunkInstances, globalPineLeafInstances, globalFirLeafInstances, globalWaterLilyInstances;
+        std::vector<glm::vec3> globalFallenTreeTrunkInstances, globalOakTrunkInstances, globalOakLeafInstances, globalLeafPileInstances;
+        std::vector<glm::vec3> globalBushSmallInstances, globalBushMediumInstances, globalBushLargeInstances;
+        std::vector<glm::vec3> globalAncientTrunkInstances, globalAncientLeafInstances, globalAncientBranchInstances;
         std::vector<glm::vec4> globalBranchInstances;
         std::vector<glm::vec3> globalAuroraInstances;
-
         for (Chunk* chunk : visibleChunks) {
             globalGrassInstances.insert(globalGrassInstances.end(), chunk->grassPositions.begin(), chunk->grassPositions.end());
             globalDirtInstances.insert(globalDirtInstances.end(), chunk->dirtPositions.begin(), chunk->dirtPositions.end());
@@ -1561,8 +1469,6 @@ int main() {
             globalBranchInstances.insert(globalBranchInstances.end(), chunk->branchPositions.begin(), chunk->branchPositions.end());
             globalAuroraInstances.insert(globalAuroraInstances.end(), chunk->auroraPositions.begin(), chunk->auroraPositions.end());
         }
-
-        // Helper lambda for instanced drawing (non-branch blocks)
         auto drawInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
@@ -1573,7 +1479,6 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        // Helper lambda for branch drawing (instance data as vec4)
         auto drawBranchInstances = [&](unsigned int vao, unsigned int branchVBO, int blockType, const std::vector<glm::vec4>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
@@ -1584,7 +1489,6 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec4), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        // For ancient branches (block type 18)
         auto drawAncientBranchInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
@@ -1595,8 +1499,6 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-
-        // Draw regular block types:
         drawInstances(grassVAO, 0, globalGrassInstances);
         drawInstances(dirtVAO, 15, globalDirtInstances);
         drawInstances(deepStoneVAO, 20, globalDeepStoneInstances);
@@ -1617,10 +1519,7 @@ int main() {
         drawInstances(ancientLeafVAO, 17, globalAncientLeafInstances);
         drawAncientBranchInstances(ancientBranchVAO, 18, globalAncientBranchInstances);
         drawBranchInstances(branchVAO, branchInstanceVBO, 14, globalBranchInstances);
-        // --- Draw Aurora Blocks (block type 19) ---
         drawInstances(waterVAO, 19, globalAuroraInstances);
-
-        // Draw the origin cube (block type 4)
         glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 4);
         {
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -1628,15 +1527,13 @@ int main() {
             glBindVertexArray(VAO);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
-
-        // ==================== Block Outline (existing) ====================
         glm::ivec3 selectedBlock = raycastForBlock(false);
         if (selectedBlock.x != -10000) {
             glm::mat4 outlineModel = glm::translate(glm::mat4(1.0f), glm::vec3(selectedBlock));
             outlineModel = glm::scale(outlineModel, glm::vec3(1.05f));
             glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(outlineModel));
             glm::vec3 outlineColor = glm::vec3(1.0f, 1.0f, 1.0f);
-            glm::vec3 oldBlockColor0 = blockColors[0];
+            glm::vec3 oldColor = blockColors[0];
             blockColors[0] = outlineColor;
             glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 0);
@@ -1647,16 +1544,12 @@ int main() {
             glDrawArrays(GL_TRIANGLES, 0, 36);
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             glEnable(GL_DEPTH_TEST);
-            blockColors[0] = oldBlockColor0;
+            blockColors[0] = oldColor;
             glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
         }
-        // ====================================================================
-
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
-
-    // ------------------------- Cleanup -------------------------
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &redVAO);
     glDeleteVertexArrays(1, &waterVAO);
@@ -1679,7 +1572,6 @@ int main() {
     glDeleteVertexArrays(1, &dirtVAO);
     glDeleteVertexArrays(1, &deepStoneVAO);
     glDeleteVertexArrays(1, &lavaVAO);
-
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &instanceVBO);
     glDeleteBuffers(1, &branchInstanceVBO);
