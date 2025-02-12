@@ -39,6 +39,11 @@
 //      lava (block type 21, orange) is used.
 //      **New:** However, if a cell is above sea level (y ≥ 0) then even if the cave noise would
 //      carve out a cave, we simply place stone.
+//  16) NEW: A simplified minimap overlay in the top–right corner that shows a “mini–map” of the area
+//      (roughly 6 chunks or 96 blocks in each direction from the player), with chunk grid lines,
+//      a red arrow indicating the player’s facing, and the letters “N”, “E”, “S”, and “W” drawn.
+//  17) (Also note that the east–no–tree feature remains: once you move 512 chunks (512×16 blocks)
+//      east of spawn, no trees (or bushes) are generated.)
 // ======================================================================
 
 #include <glad/glad.h>
@@ -57,7 +62,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 40.0f; // For testing.
+const float RENDER_DISTANCE = 20.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
 // Extend deep stone further down.
@@ -74,7 +79,7 @@ const float CAVE_THRESHOLD = 0.6f; // If noise value is below this, stone is pla
 const float UNIFIED_CAVE_SCALE = 0.1f;      // Even lower scale for HUGE caves.
 const float UNIFIED_CAVE_THRESHOLD = -0.8f; // Lower threshold means most cells will be carved out.
 const float LIQUID_TYPE_SCALE = 0.02f;      // Scale for secondary liquid determination.
-// In the secondary check, if the noise is less than 0.3, fill with water; otherwise, fill with lava.
+// In the secondary check, if the noise is less than 0.3, fill with water; otherwise, with lava.
 
 // ==================== Global Camera Variables ====================
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
@@ -725,7 +730,8 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     }
                 }
                 // ------------------ Tree Generation ------------------
-                if (terrain.height > 2.0) {
+                // Disable tree and bush generation for regions 512 chunks (512x16 blocks) east of spawn.
+                if (terrain.height > 2.0 && chunkX < 20) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
 
@@ -930,7 +936,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             chunk.branchPositions.push_back(glm::vec4(worldX + 0.5f, groundHeight + 0.5f, worldZ + 0.5f, rot));
                         }
                     }
-                }
+                } // End tree generation block (disabled for east of 512 chunks)
             }
         }
     }
@@ -1185,6 +1191,25 @@ const char* fragmentShaderSource = R"(
    }
 )";
 
+// ------------------------- Minimap Shader Sources -------------------------
+const char* minimapVertexShaderSource = R"(
+   #version 330 core
+   layout (location = 0) in vec2 aPos;
+   uniform mat4 ortho;
+   void main(){
+       gl_Position = ortho * vec4(aPos, 0.0, 1.0);
+   }
+)";
+
+const char* minimapFragmentShaderSource = R"(
+   #version 330 core
+   out vec4 FragColor;
+   uniform vec3 color;
+   void main(){
+       FragColor = vec4(color, 1.0);
+   }
+)";
+
 // ------------------------- Cube Vertex Data -------------------------
 float cubeVertices[] = {
     // positions            // texture Coords
@@ -1231,6 +1256,138 @@ float cubeVertices[] = {
 -0.5f, -0.5f,  0.5f,     0.0f, 1.0f,
 -0.5f, -0.5f, -0.5f,     0.0f, 0.0f
 };
+
+// ==================== Minimap Rendering Function ====================
+/*
+   This function sets a 200×200 pixel viewport in the top–right corner and
+   draws a simple minimap overlay:
+   - The view shows a 192×192 block area (roughly 6 chunks in each direction)
+     with grid lines marking chunk boundaries.
+   - A red arrow centered on the player indicates the player's facing direction.
+   - Simple line-drawn letters "N", "E", "S", "W" are drawn at the edges.
+*/
+void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO) {
+    // Set minimap viewport (top-right corner)
+    int minimapWidth = 200;
+    int minimapHeight = 200;
+    glViewport(WINDOW_WIDTH - minimapWidth, WINDOW_HEIGHT - minimapHeight, minimapWidth, minimapHeight);
+
+    // Construct minimap transformation matrix.
+    // We want to show a 192x192 block area (6 chunks in each direction; 6*16 = 96 blocks each side)
+    float halfRange = 96.0f;
+    glm::mat4 ortho = glm::ortho(-halfRange, halfRange, -halfRange, halfRange, -1.0f, 1.0f);
+    // Translate world coordinates so that the player (cameraPos.x, cameraPos.z) is at (0,0)
+    glm::mat4 translate = glm::translate(glm::mat4(1.0f), glm::vec3(-cameraPos.x, -cameraPos.z, 0.0f));
+    // Flip the y-axis so that north (negative z in world) appears at the top
+    glm::mat4 flip = glm::scale(glm::mat4(1.0f), glm::vec3(1, -1, 1));
+    glm::mat4 minimapMatrix = flip * ortho * translate;
+
+    glUseProgram(minimapShaderProgram);
+    glUniformMatrix4fv(glGetUniformLocation(minimapShaderProgram, "ortho"), 1, GL_FALSE, glm::value_ptr(minimapMatrix));
+
+    // Draw grid lines for chunk boundaries.
+    std::vector<glm::vec2> gridVertices;
+    // Vertical lines (constant x, vary z)
+    int startX = (int)std::floor((cameraPos.x - halfRange) / 16.0f);
+    int endX = (int)std::ceil((cameraPos.x + halfRange) / 16.0f);
+    for (int i = startX; i <= endX; i++) {
+        float x = i * 16.0f;
+        gridVertices.push_back(glm::vec2(x, cameraPos.z - halfRange));
+        gridVertices.push_back(glm::vec2(x, cameraPos.z + halfRange));
+    }
+    // Horizontal lines (constant z, vary x)
+    int startZ = (int)std::floor((cameraPos.z - halfRange) / 16.0f);
+    int endZ = (int)std::ceil((cameraPos.z + halfRange) / 16.0f);
+    for (int j = startZ; j <= endZ; j++) {
+        float z = j * 16.0f;
+        gridVertices.push_back(glm::vec2(cameraPos.x - halfRange, z));
+        gridVertices.push_back(glm::vec2(cameraPos.x + halfRange, z));
+    }
+    glBindVertexArray(minimapVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, minimapVBO);
+    glBufferData(GL_ARRAY_BUFFER, gridVertices.size() * sizeof(glm::vec2), gridVertices.data(), GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0);
+    glEnableVertexAttribArray(0);
+    glUniform3f(glGetUniformLocation(minimapShaderProgram, "color"), 0.3f, 0.3f, 0.3f);
+    glDrawArrays(GL_LINES, 0, gridVertices.size());
+
+    // Draw player's arrow.
+    std::vector<glm::vec2> arrowVertices;
+    // Define an arrow shape centered at (0,0) in minimap coordinates.
+    arrowVertices.push_back(glm::vec2(0.0f, 8.0f));
+    arrowVertices.push_back(glm::vec2(-4.0f, -4.0f));
+    arrowVertices.push_back(glm::vec2(-4.0f, -4.0f));
+    arrowVertices.push_back(glm::vec2(0.0f, -1.0f));
+    arrowVertices.push_back(glm::vec2(0.0f, -1.0f));
+    arrowVertices.push_back(glm::vec2(4.0f, -4.0f));
+    arrowVertices.push_back(glm::vec2(4.0f, -4.0f));
+    arrowVertices.push_back(glm::vec2(0.0f, 8.0f));
+    // Rotate the arrow by the player's facing direction.
+    float arrowAngle = glm::radians(-yaw - 90.0f);
+    for (auto& v : arrowVertices) {
+        float x = v.x;
+        float y = v.y;
+        v.x = x * cos(arrowAngle) - y * sin(arrowAngle);
+        v.y = x * sin(arrowAngle) + y * cos(arrowAngle);
+        // Translate to the player's world position.
+        v += glm::vec2(cameraPos.x, cameraPos.z);
+    }
+    glBufferData(GL_ARRAY_BUFFER, arrowVertices.size() * sizeof(glm::vec2), arrowVertices.data(), GL_DYNAMIC_DRAW);
+    glUniform3f(glGetUniformLocation(minimapShaderProgram, "color"), 1.0f, 0.0f, 0.0f);
+    glDrawArrays(GL_LINE_STRIP, 0, arrowVertices.size());
+
+    // Draw cardinal direction letters ("N", "E", "S", "W") as simple line segments.
+    auto drawLetter = [&](const std::vector<glm::vec2>& letterVertices, glm::vec2 basePos) {
+        std::vector<glm::vec2> letterTransformed = letterVertices;
+        for (auto& v : letterTransformed) {
+            v += basePos; // position the letter at the desired base.
+        }
+        glBufferData(GL_ARRAY_BUFFER, letterTransformed.size() * sizeof(glm::vec2), letterTransformed.data(), GL_DYNAMIC_DRAW);
+        glUniform3f(glGetUniformLocation(minimapShaderProgram, "color"), 1.0f, 1.0f, 1.0f);
+        glDrawArrays(GL_LINES, 0, letterTransformed.size());
+        };
+
+    // Define letter shapes (in local 2D coordinates).
+    std::vector<glm::vec2> letterN = {
+        {0,0}, {0,10},
+        {0,10}, {5,0},
+        {5,0}, {5,10}
+    };
+    std::vector<glm::vec2> letterE = {
+        {6,10}, {0,10},
+        {0,10}, {0,0},
+        {0,5}, {4,5},
+        {0,0}, {6,0}
+    };
+    std::vector<glm::vec2> letterS = {
+        {6,10}, {0,10},
+        {0,10}, {0,5},
+        {0,5}, {6,5},
+        {6,5}, {6,0},
+        {6,0}, {0,0}
+    };
+    std::vector<glm::vec2> letterW = {
+        {0,10}, {2.5f,0},
+        {2.5f,0}, {5,10},
+        {5,10}, {7.5f,0}
+    };
+    float margin = 10.0f;
+    // Position for "N": top center.
+    glm::vec2 posN(cameraPos.x - 2.5f, cameraPos.z + halfRange - margin);
+    drawLetter(letterN, posN);
+    // Position for "E": right center.
+    glm::vec2 posE(cameraPos.x + halfRange - margin, cameraPos.z - 3.0f);
+    drawLetter(letterE, posE);
+    // Position for "S": bottom center.
+    glm::vec2 posS(cameraPos.x - 3.0f, cameraPos.z - halfRange + margin);
+    drawLetter(letterS, posS);
+    // Position for "W": left center.
+    glm::vec2 posW(cameraPos.x - halfRange + margin, cameraPos.z - 3.0f);
+    drawLetter(letterW, posW);
+
+    // Restore full-screen viewport.
+    glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
+}
 
 // ========================== MAIN FUNCTION ==========================
 int main() {
@@ -1298,6 +1455,47 @@ int main() {
     glDeleteShader(vertexShader);
     glDeleteShader(fragmentShader);
 
+    // ------------------------- Minimap Shader Compilation -------------------------
+    unsigned int minimapVertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(minimapVertexShader, 1, &minimapVertexShaderSource, NULL);
+    glCompileShader(minimapVertexShader);
+    {
+        int success;
+        glGetShaderiv(minimapVertexShader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            char infoLog[512];
+            glGetShaderInfoLog(minimapVertexShader, 512, NULL, infoLog);
+            std::cout << "Minimap Vertex Shader Compilation Error:\n" << infoLog << "\n";
+        }
+    }
+    unsigned int minimapFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(minimapFragmentShader, 1, &minimapFragmentShaderSource, NULL);
+    glCompileShader(minimapFragmentShader);
+    {
+        int success;
+        glGetShaderiv(minimapFragmentShader, GL_COMPILE_STATUS, &success);
+        if (!success) {
+            char infoLog[512];
+            glGetShaderInfoLog(minimapFragmentShader, 512, NULL, infoLog);
+            std::cout << "Minimap Fragment Shader Compilation Error:\n" << infoLog << "\n";
+        }
+    }
+    unsigned int minimapShaderProgram = glCreateProgram();
+    glAttachShader(minimapShaderProgram, minimapVertexShader);
+    glAttachShader(minimapShaderProgram, minimapFragmentShader);
+    glLinkProgram(minimapShaderProgram);
+    {
+        int success;
+        glGetProgramiv(minimapShaderProgram, GL_LINK_STATUS, &success);
+        if (!success) {
+            char infoLog[512];
+            glGetProgramInfoLog(minimapShaderProgram, 512, NULL, infoLog);
+            std::cout << "Minimap Shader Program Linking Error:\n" << infoLog << "\n";
+        }
+    }
+    glDeleteShader(minimapVertexShader);
+    glDeleteShader(minimapFragmentShader);
+
     // ------------------------- Setup VAOs and VBOs -------------------------
     unsigned int VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
     unsigned int oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
@@ -1339,6 +1537,11 @@ int main() {
     GLuint branchInstanceVBO, ancientBranchInstanceVBO;
     glGenBuffers(1, &branchInstanceVBO);
     glGenBuffers(1, &ancientBranchInstanceVBO);
+
+    // Also create VAO and VBO for the minimap overlay.
+    GLuint minimapVAO, minimapVBO;
+    glGenVertexArrays(1, &minimapVAO);
+    glGenBuffers(1, &minimapVBO);
 
     // Helper: setup a generic cube VAO for non-branch blocks.
     auto setupVAO = [&](unsigned int vao, bool instanced) {
@@ -1607,6 +1810,9 @@ int main() {
         }
         // ====================================================================
 
+        // ------------------ Render Minimap Overlay ------------------
+        renderMinimap(minimapShaderProgram, minimapVAO, minimapVBO);
+
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
@@ -1634,12 +1840,15 @@ int main() {
     glDeleteVertexArrays(1, &dirtVAO);
     glDeleteVertexArrays(1, &deepStoneVAO);
     glDeleteVertexArrays(1, &lavaVAO);
+    glDeleteVertexArrays(1, &minimapVAO);
 
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &instanceVBO);
     glDeleteBuffers(1, &branchInstanceVBO);
     glDeleteBuffers(1, &ancientBranchInstanceVBO);
+    glDeleteBuffers(1, &minimapVBO);
     glDeleteProgram(shaderProgram);
+    glDeleteProgram(minimapShaderProgram);
     glfwTerminate();
     return 0;
 }
