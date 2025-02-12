@@ -37,6 +37,8 @@
 //      as a cave. In the carved–out cells a secondary noise value determines which liquid fills
 //      the cave: if the secondary value is below 0.3, water is used (block type 1); otherwise,
 //      lava (block type 21, orange) is used.
+//      **New:** However, if a cell is above sea level (y ≥ 0) then even if the cave noise would
+//      carve out a cave, we simply place stone.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -68,10 +70,10 @@ const float CAVE_THRESHOLD = 0.6f; // If noise value is below this, stone is pla
 // ------------------ NEW Unified Cave System for Land ------------------
 // To generate massive caves that intermingle water and lava, we use a unified system.
 // Here the "unified" noise is sampled at a very low frequency to carve out huge regions.
-// Then a second noise (using lavaCaveNoise) determines which liquid fills the carved area.
+// Then a secondary noise (using lavaCaveNoise) determines which liquid fills the carved area.
 const float UNIFIED_CAVE_SCALE = 0.1f;      // Even lower scale for HUGE caves.
-const float UNIFIED_CAVE_THRESHOLD = -0.8f;     // Lower threshold means most cells will be carved out.
-const float LIQUID_TYPE_SCALE = 0.02f;          // Scale for secondary liquid determination.
+const float UNIFIED_CAVE_THRESHOLD = -0.8f; // Lower threshold means most cells will be carved out.
+const float LIQUID_TYPE_SCALE = 0.02f;      // Scale for secondary liquid determination.
 // In the secondary check, if the noise is less than 0.3, fill with water; otherwise, fill with lava.
 
 // ==================== Global Camera Variables ====================
@@ -696,24 +698,30 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                 // Land cells: generate layered ground.
                 chunk.grassPositions.push_back(glm::vec3(worldX, groundHeight, worldZ)); // Grass layer.
                 chunk.dirtPositions.push_back(glm::vec3(worldX, groundHeight - 1, worldZ)); // Dirt layer.
-                // ------------------ Unified Cave Generation ------------------
-                // For every cell from (groundHeight - 2) down to MIN_Y, sample a unified noise
-                // at a very low frequency to carve out massive caves.
+                // ------------------ Unified Cave Generation for Land ------------------
+                // For every cell from (groundHeight - 2) down to MIN_Y, carve out caves
+                // except above sea level (y >= 0), which should always be stone.
                 for (int y = groundHeight - 2; y >= MIN_Y; y--) {
-                    double caveVal = caveNoise.noise(worldX * UNIFIED_CAVE_SCALE, y * UNIFIED_CAVE_SCALE, worldZ * UNIFIED_CAVE_SCALE);
-                    if (caveVal < UNIFIED_CAVE_THRESHOLD) {
-                        // If the noise is very low, place stone.
+                    if (y >= 0) {
+                        // Above sea level, do not carve out caves; simply place stone.
                         chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
                     }
                     else {
-                        // Otherwise, carve out a cave.
-                        // Use a secondary noise function (lavaCaveNoise) to decide the liquid type.
-                        double liquidVal = lavaCaveNoise.noise(worldX * LIQUID_TYPE_SCALE, y * LIQUID_TYPE_SCALE, worldZ * LIQUID_TYPE_SCALE);
-                        // If liquidVal is below 0.3, fill with water; otherwise, with lava.
-                        if (liquidVal < 0.3)
-                            chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
-                        else
-                            chunk.lavaPositions.push_back(glm::vec3(worldX, y, worldZ));
+                        double caveVal = caveNoise.noise(worldX * UNIFIED_CAVE_SCALE, y * UNIFIED_CAVE_SCALE, worldZ * UNIFIED_CAVE_SCALE);
+                        if (caveVal < UNIFIED_CAVE_THRESHOLD) {
+                            // If the unified cave noise is very low, place stone.
+                            chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
+                        }
+                        else {
+                            // Otherwise, carve out a cave.
+                            // Use a secondary noise function to decide the liquid type.
+                            double liquidVal = lavaCaveNoise.noise(worldX * LIQUID_TYPE_SCALE, y * LIQUID_TYPE_SCALE, worldZ * LIQUID_TYPE_SCALE);
+                            // If liquidVal is below 0.3, fill with water; otherwise, with lava.
+                            if (liquidVal < 0.3)
+                                chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
+                            else
+                                chunk.lavaPositions.push_back(glm::vec3(worldX, y, worldZ));
+                        }
                     }
                 }
                 // ------------------ Tree Generation ------------------
