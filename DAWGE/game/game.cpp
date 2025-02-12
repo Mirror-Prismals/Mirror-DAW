@@ -19,10 +19,24 @@
 //      Ancient tree branches are now full blocks.
 //  11) A simple collision check for trees so that trees of the same type
 //      do not spawn too close to each other.
-//  12) NEW: Aurora blocks in the sky – actual translucent blocks (block type 19)
-//      generated via 3D Perlin noise in a fixed sky region (here y=80 to 100) and
+//  12) Aurora blocks in the sky – actual translucent blocks (block type 19)
+//      generated via 3D Perlin noise in a fixed sky region (here y=135 to 136) and
 //      drawn with a magenta, translucent color. In the vertex shader a slight vertical
 //      oscillation (using a time uniform) animates the aurora.
+//  13) The original stone ground is now split into three layers:
+//      – The top layer (formerly stone) is now grass (block type 0).
+//      – Immediately beneath is a dirt layer (block type 15).
+//      – Under that is the deep stone layer (block type 20).
+//  14) The deep stone layer is extended down to MIN_Y (set to –64) for both land and water,
+//      with cave carving applied via 3D Perlin noise. In the standard (water) system,
+//      if the noise value is below CAVE_THRESHOLD, stone is placed; otherwise, if y < 0,
+//      water fills the cave.
+//  15) NEW: Instead of having a hard y–level split between water and lava caves,
+//      we now use a unified cave system for land cells. In the deep layers of a land cell,
+//      a unified noise (sampled at a very low scale) determines whether a cell is carved out
+//      as a cave. In the carved–out cells a secondary noise value determines which liquid fills
+//      the cave: if the secondary value is below 0.3, water is used (block type 1); otherwise,
+//      lava (block type 21, orange) is used.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -41,8 +55,24 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 100.0f; // For testing.
+const float RENDER_DISTANCE = 5.0f; // For testing.
 const int CHUNK_SIZE = 16;
+
+// Extend deep stone further down.
+const int MIN_Y = -64;
+
+// Constants for the standard water cave generation.
+const float CAVE_SCALE = 0.04f;    // Lower scale -> larger cave features.
+const float CAVE_THRESHOLD = 0.6f; // If noise value is below this, stone is placed; otherwise, cave is carved and (if y < 0) filled with water.
+
+// ------------------ NEW Unified Cave System for Land ------------------
+// To generate massive caves that intermingle water and lava, we use a unified system.
+// Here the "unified" noise is sampled at a very low frequency to carve out huge regions.
+// Then a second noise (using lavaCaveNoise) determines which liquid fills the carved area.
+const float UNIFIED_CAVE_SCALE = 0.1f;      // Even lower scale for HUGE caves.
+const float UNIFIED_CAVE_THRESHOLD = -0.8f;     // Lower threshold means most cells will be carved out.
+const float LIQUID_TYPE_SCALE = 0.02f;          // Scale for secondary liquid determination.
+// In the secondary check, if the noise is less than 0.3, fill with water; otherwise, fill with lava.
 
 // ==================== Global Camera Variables ====================
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
@@ -81,37 +111,35 @@ namespace std {
     };
 }
 
-// The Chunk now also stores vectors for ground branches, ancient trees, and aurora blocks.
+// The Chunk now stores vectors for various block types, including the new lava.
 struct Chunk {
     std::vector<glm::vec3> waterPositions;
-    std::vector<glm::vec3> stonePositions;
-    std::vector<glm::vec3> treeTrunkPositions;     // Pine/Fir trunk
-    std::vector<glm::vec3> treeLeafPositions;      // Pine leaves
-    std::vector<glm::vec3> firLeafPositions;       // Fir leaves
-    std::vector<glm::vec3> waterLilyPositions;
-    std::vector<glm::vec3> fallenTreeTrunkPositions;
-
-    // Oak tree arrays:
-    std::vector<glm::vec3> oakTrunkPositions;
-    std::vector<glm::vec3> oakLeafPositions;
-
+    // Ground layers:
+    std::vector<glm::vec3> grassPositions;     // Top layer (grass, block type 0)
+    std::vector<glm::vec3> dirtPositions;      // Dirt layer (block type 15)
+    std::vector<glm::vec3> deepStonePositions; // Deep stone layer (block type 20)
+    // NEW: Lava block vector (block type 21)
+    std::vector<glm::vec3> lavaPositions;
+    std::vector<glm::vec3> treeTrunkPositions;     // Pine/Fir trunk (block type 2)
+    std::vector<glm::vec3> treeLeafPositions;      // Pine leaves (block type 3)
+    std::vector<glm::vec3> firLeafPositions;       // Fir leaves (block type 7)
+    std::vector<glm::vec3> waterLilyPositions;     // Water lilies (block type 5)
+    std::vector<glm::vec3> fallenTreeTrunkPositions; // Fallen log (block type 6)
+    // Oak trees:
+    std::vector<glm::vec3> oakTrunkPositions; // (block type 8)
+    std::vector<glm::vec3> oakLeafPositions;  // (block type 9)
     // Leaf piles and bushes:
-    std::vector<glm::vec3> leafPilePositions;
-    std::vector<glm::vec3> bushSmallPositions;
-    std::vector<glm::vec3> bushMediumPositions;
-    std::vector<glm::vec3> bushLargePositions;
-
-    // Ground branches (drawn as thin blocks)
-    // Stored as vec4: xyz = position, w = rotation.
+    std::vector<glm::vec3> leafPilePositions;  // (block type 10)
+    std::vector<glm::vec3> bushSmallPositions; // (block type 11)
+    std::vector<glm::vec3> bushMediumPositions;// (block type 12)
+    std::vector<glm::vec3> bushLargePositions; // (block type 13)
+    // Ground branches (block type 14)
     std::vector<glm::vec4> branchPositions;
-
-    // Ancient tree arrays (fourth tree type)
-    std::vector<glm::vec3> ancientTrunkPositions; // Block type 16
-    std::vector<glm::vec3> ancientLeafPositions;  // Block type 17
-    // Ancient branches are now full blocks.
-    std::vector<glm::vec3> ancientBranchPositions; // Block type 18
-
-    // NEW: Aurora blocks in the sky (block type 19)
+    // Ancient trees:
+    std::vector<glm::vec3> ancientTrunkPositions; // (block type 16)
+    std::vector<glm::vec3> ancientLeafPositions;  // (block type 17)
+    std::vector<glm::vec3> ancientBranchPositions; // (block type 18)
+    // Aurora blocks (block type 19)
     std::vector<glm::vec3> auroraPositions;
 
     bool needsMeshUpdate;
@@ -125,13 +153,13 @@ struct ivec3_hash {
     }
 };
 
-// Global block modifications: key is a block position, value indicates modification:
-//   -1 = removal; nonnegative values indicate block type:
-//   0 = Stone, 1 = Water, 2 = Pine/Fir trunk, 3 = Pine leaves, 4 = Origin debug,
-//   5 = Water lily, 6 = Fallen log, 7 = Fir leaves, 8 = Oak trunk, 9 = Oak leaves,
-//  10 = Leaf pile, 11 = Bush (small), 12 = Bush (medium), 13 = Bush (large),
-//  14 = Ground branch, 16 = Ancient trunk, 17 = Ancient leaves, 18 = Ancient branch,
-//  19 = Aurora block.
+// Global block modifications: key is a block position, value indicates modification.
+// Mapping:
+//  0 = Grass, 1 = Water, 2 = Pine/Fir trunk, 3 = Pine leaves, 4 = Origin debug,
+//  5 = Water lily, 6 = Fallen log, 7 = Fir leaves, 8 = Oak trunk, 9 = Oak leaves,
+// 10 = Leaf pile, 11 = Bush (small), 12 = Bush (medium), 13 = Bush (large),
+// 14 = Ground branch, 15 = Dirt, 16 = Ancient trunk, 17 = Ancient leaves, 18 = Ancient branch,
+// 19 = Aurora block, 20 = Deep Stone, 21 = Lava.
 std::unordered_map<glm::ivec3, int, ivec3_hash> blockModifications;
 
 // Global chunk storage.
@@ -195,8 +223,10 @@ public:
 PerlinNoise continentalNoise(1);
 PerlinNoise elevationNoise(2);
 PerlinNoise ridgeNoise(3);
-// NEW: Perlin noise instance for aurora block placement.
+PerlinNoise caveNoise(5);
 PerlinNoise auroraNoise(4);
+// NEW: Perlin noise instance for lava caves.
+PerlinNoise lavaCaveNoise(6);
 
 // ==================== Terrain Generation ====================
 struct TerrainPoint { double height; bool isLand; };
@@ -374,8 +404,20 @@ glm::ivec3 raycastForBlock(bool place) {
         ChunkPos cp{ chunkX, chunkZ };
         if (chunks.find(cp) != chunks.end()) {
             Chunk& ch = chunks[cp];
-            for (const auto& pos : ch.stonePositions)
-                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
+            for (const auto& pos : ch.waterPositions)
+                if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), waterTol))) { exists = true; break; }
+            if (!exists)
+                for (const auto& pos : ch.grassPositions)
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
+            if (!exists)
+                for (const auto& pos : ch.dirtPositions)
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
+            if (!exists)
+                for (const auto& pos : ch.deepStonePositions)
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
+            if (!exists)
+                for (const auto& pos : ch.lavaPositions)
+                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), stoneTol))) { exists = true; break; }
             if (!exists)
                 for (const auto& pos : ch.treeTrunkPositions)
                     if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), trunkTol))) { exists = true; break; }
@@ -385,9 +427,6 @@ glm::ivec3 raycastForBlock(bool place) {
             if (!exists)
                 for (const auto& pos : ch.firLeafPositions)
                     if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), leafTol))) { exists = true; break; }
-            if (!exists)
-                for (const auto& pos : ch.waterPositions)
-                    if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), waterTol))) { exists = true; break; }
             if (!exists)
                 for (const auto& pos : ch.waterLilyPositions)
                     if (glm::all(glm::epsilonEqual(pos, glm::vec3(candidate), lilyTol))) { exists = true; break; }
@@ -489,6 +528,12 @@ void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods) {
                         blockTypeToPlace = 12;
                     else if (within(ch.bushLargePositions, 0.5f))
                         blockTypeToPlace = 13;
+                    else if (within(ch.grassPositions, 0.5f))
+                        blockTypeToPlace = 0;
+                    else if (within(ch.dirtPositions, 0.5f))
+                        blockTypeToPlace = 15;
+                    else if (within(ch.deepStonePositions, 0.5f))
+                        blockTypeToPlace = 20;
                     else
                         blockTypeToPlace = 0;
                 }
@@ -520,7 +565,7 @@ struct QuadtreeNode {
         for (int i = 0; i < 4; i++) children[i] = nullptr;
     }
     ~QuadtreeNode() { for (int i = 0; i < 4; i++) if (children[i]) delete children[i]; }
-    glm::vec3 getMinWorld() const { return glm::vec3(minX * CHUNK_SIZE, -4.0f, minZ * CHUNK_SIZE); }
+    glm::vec3 getMinWorld() const { return glm::vec3(minX * CHUNK_SIZE, MIN_Y, minZ * CHUNK_SIZE); }
     glm::vec3 getMaxWorld() const { return glm::vec3((maxX + 1) * CHUNK_SIZE, 150.0f, (maxZ + 1) * CHUNK_SIZE); }
     bool contains(const ChunkPos& pos) const { return pos.x >= minX && pos.x <= maxX && pos.z >= minZ && pos.z <= maxZ; }
     void subdivide() {
@@ -581,7 +626,10 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
         return;
     // Clear old data
     chunk.waterPositions.clear();
-    chunk.stonePositions.clear();
+    chunk.grassPositions.clear();
+    chunk.dirtPositions.clear();
+    chunk.deepStonePositions.clear();
+    chunk.lavaPositions.clear();
     chunk.treeTrunkPositions.clear();
     chunk.treeLeafPositions.clear();
     chunk.firLeafPositions.clear();
@@ -599,13 +647,16 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     chunk.ancientBranchPositions.clear();
     chunk.auroraPositions.clear();
 
+    // ------------------ For Water Cells ------------------
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
             double worldZ = chunkZ * CHUNK_SIZE + z;
             TerrainPoint terrain = getTerrainHeight(worldX, worldZ);
             if (!terrain.isLand) {
+                // For water cells, add a water surface at y = 0.
                 chunk.waterPositions.push_back(glm::vec3(worldX, 0.0f, worldZ));
+                // Place water lilies as before.
                 if (x > 3 && x < CHUNK_SIZE - 3 && z > 3 && z < CHUNK_SIZE - 3 &&
                     (x % 7 == 3) && (z % 7 == 3)) {
                     bool canPlaceLily = true;
@@ -627,12 +678,45 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                         }
                     }
                 }
+                // For water cells, generate deep stone underneath from y = -1 to MIN_Y.
+                for (int y = -1; y >= MIN_Y; y--) {
+                    double caveVal = caveNoise.noise(worldX * CAVE_SCALE, y * CAVE_SCALE, worldZ * CAVE_SCALE);
+                    if (caveVal < CAVE_THRESHOLD) {
+                        chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
+                    }
+                    else {
+                        if (y < 0) {
+                            chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
+                        }
+                    }
+                }
             }
             else {
                 int groundHeight = static_cast<int>(std::floor(terrain.height));
-                for (int y = groundHeight; y >= -4; y--) {
-                    chunk.stonePositions.push_back(glm::vec3(worldX, y, worldZ));
+                // Land cells: generate layered ground.
+                chunk.grassPositions.push_back(glm::vec3(worldX, groundHeight, worldZ)); // Grass layer.
+                chunk.dirtPositions.push_back(glm::vec3(worldX, groundHeight - 1, worldZ)); // Dirt layer.
+                // ------------------ Unified Cave Generation ------------------
+                // For every cell from (groundHeight - 2) down to MIN_Y, sample a unified noise
+                // at a very low frequency to carve out massive caves.
+                for (int y = groundHeight - 2; y >= MIN_Y; y--) {
+                    double caveVal = caveNoise.noise(worldX * UNIFIED_CAVE_SCALE, y * UNIFIED_CAVE_SCALE, worldZ * UNIFIED_CAVE_SCALE);
+                    if (caveVal < UNIFIED_CAVE_THRESHOLD) {
+                        // If the noise is very low, place stone.
+                        chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
+                    }
+                    else {
+                        // Otherwise, carve out a cave.
+                        // Use a secondary noise function (lavaCaveNoise) to decide the liquid type.
+                        double liquidVal = lavaCaveNoise.noise(worldX * LIQUID_TYPE_SCALE, y * LIQUID_TYPE_SCALE, worldZ * LIQUID_TYPE_SCALE);
+                        // If liquidVal is below 0.3, fill with water; otherwise, with lava.
+                        if (liquidVal < 0.3)
+                            chunk.waterPositions.push_back(glm::vec3(worldX, y, worldZ));
+                        else
+                            chunk.lavaPositions.push_back(glm::vec3(worldX, y, worldZ));
+                    }
                 }
+                // ------------------ Tree Generation ------------------
                 if (terrain.height > 2.0) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
@@ -697,7 +781,6 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 }
                             }
                         }
-                        // Generate ancient canopy (spherical pattern of leaves)
                         int centerY = groundHeight + trunkHeight;
                         float canopyRadius = 5.0f;
                         for (int dy = -static_cast<int>(canopyRadius); dy <= static_cast<int>(canopyRadius); dy++) {
@@ -710,15 +793,13 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 }
                             }
                         }
-                        // Generate FOUR ancient branches at fixed relative heights:
-                        // low, low-mid, high-mid, high.
-                        int branchBaseHeights[4] = { 7, 13, 19, 25 }; // relative to trunk (for trunkHeight=30)
+                        int branchBaseHeights[4] = { 7, 13, 19, 25 };
                         for (int b = 0; b < 4; b++) {
                             int randomOffset = (rand() % 3) - 1;
                             int branchStart = branchBaseHeights[b] + randomOffset;
-                            float branchRot = (b * 90.0f) * (3.14159f / 180.0f); // fixed cardinal directions.
+                            float branchRot = (b * 90.0f) * (3.14159f / 180.0f);
                             glm::vec3 branchStartPos = glm::vec3(worldX + trunkThickness / 2.0f, groundHeight + branchStart, worldZ + trunkThickness / 2.0f);
-                            int branchLength = 10 + (rand() % 3); // 10-12 blocks long.
+                            int branchLength = 10 + (rand() % 3);
                             for (int i = 1; i <= branchLength; i++) {
                                 float bx = cos(branchRot) * i;
                                 float bz = sin(branchRot) * i;
@@ -846,7 +927,6 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
         }
     }
     // --- NEW: Generate Aurora Blocks in the Sky (block type 19) ---
-    // For every (x,z) in this chunk, for y between 80 and 100, use 3D Perlin noise to decide placement.
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
@@ -859,7 +939,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
             }
         }
     }
-    // Apply block modifications (existing)
+    // Apply block modifications.
     for (const auto& mod : blockModifications) {
         glm::ivec3 pos = mod.first;
         int modType = mod.second;
@@ -873,7 +953,10 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     }), vec.end());
                 };
             if (modType == -1) {
-                removeBlock(chunk.stonePositions);
+                removeBlock(chunk.grassPositions);
+                removeBlock(chunk.dirtPositions);
+                removeBlock(chunk.deepStonePositions);
+                removeBlock(chunk.lavaPositions);
                 removeBlock(chunk.treeTrunkPositions);
                 removeBlock(chunk.treeLeafPositions);
                 removeBlock(chunk.firLeafPositions);
@@ -897,7 +980,10 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     }
                     return false;
                     };
-                if (!existsIn(chunk.stonePositions) &&
+                if (!existsIn(chunk.grassPositions) &&
+                    !existsIn(chunk.dirtPositions) &&
+                    !existsIn(chunk.deepStonePositions) &&
+                    !existsIn(chunk.lavaPositions) &&
                     !existsIn(chunk.treeTrunkPositions) &&
                     !existsIn(chunk.treeLeafPositions) &&
                     !existsIn(chunk.firLeafPositions) &&
@@ -911,7 +997,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     !existsIn(chunk.bushMediumPositions) &&
                     !existsIn(chunk.bushLargePositions)) {
                     switch (modType) {
-                    case 0:  chunk.stonePositions.push_back(glm::vec3(pos));  break;
+                    case 0:  chunk.grassPositions.push_back(glm::vec3(pos));  break;
                     case 1:  chunk.waterPositions.push_back(glm::vec3(pos));  break;
                     case 2:  chunk.treeTrunkPositions.push_back(glm::vec3(pos));  break;
                     case 3:  chunk.treeLeafPositions.push_back(glm::vec3(pos));   break;
@@ -924,8 +1010,10 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     case 11: chunk.bushSmallPositions.push_back(glm::vec3(pos));  break;
                     case 12: chunk.bushMediumPositions.push_back(glm::vec3(pos)); break;
                     case 13: chunk.bushLargePositions.push_back(glm::vec3(pos));  break;
+                    case 15: chunk.dirtPositions.push_back(glm::vec3(pos)); break;
+                    case 20: chunk.deepStonePositions.push_back(glm::vec3(pos)); break;
                     default:
-                        chunk.stonePositions.push_back(glm::vec3(pos));
+                        chunk.grassPositions.push_back(glm::vec3(pos));
                         break;
                     }
                 }
@@ -998,17 +1086,16 @@ void processInput(GLFWwindow* window) {
 }
 
 // ==================== VIEW (Rendering) ====================
-//
 // The vertex shader now also accepts a time uniform and, for blockType 19 (aurora),
-// applies a slight vertical oscillation to the block positions. Also note that the
-// blockColors uniform array size has been increased to 20.
+// applies a slight vertical oscillation to the block positions. The blockColors array
+// has been increased to 22 elements to include the new lava block (block type 21).
 // ------------------------- Shader Sources -------------------------
 const char* vertexShaderSource = R"(
    #version 330 core
    layout (location = 0) in vec3 aPos;
    layout (location = 1) in vec2 aTexCoord;
-   // For normal (non-branch) instancing, location 2 holds a vec3 offset.
-   // For branch types, if used, location 2 holds a vec3 offset and location 3 holds a float rotation.
+   // For non-branch instancing, location 2 holds a vec3 offset.
+   // For branch types, location 2 holds a vec3 offset and location 3 holds a float rotation.
    out vec2 TexCoord;
    out vec3 ourColor;
    out float instanceDistance;
@@ -1016,8 +1103,8 @@ const char* vertexShaderSource = R"(
    uniform mat4 view;
    uniform mat4 projection;
    uniform int blockType;
-   // Array of 20 block colors.
-   uniform vec3 blockColors[20];
+   // Array of 22 block colors.
+   uniform vec3 blockColors[22];
    // Atmospheric perspective uniform.
    uniform vec3 cameraPos;
    uniform float time;
@@ -1043,7 +1130,7 @@ const char* vertexShaderSource = R"(
                pos += aOffset;
            }
        }
-       // For aurora blocks, add a small animated vertical oscillation.
+       // For aurora blocks, add a slight animated vertical oscillation.
        if(blockType == 19){
            pos.y += sin(time + aOffset.x * 0.1) * 0.5;
        }
@@ -1068,6 +1155,7 @@ const char* fragmentShaderSource = R"(
    in float instanceDistance;
    out vec4 FragColor;
    uniform int blockType;
+   uniform vec3 blockColors[22];
    void main(){
        // For aurora blocks (blockType 19), output translucent magenta.
        if(blockType == 19){
@@ -1121,13 +1209,13 @@ float cubeVertices[] = {
   -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
   -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
   // Top face
- -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
-  0.5f,  0.5f,  0.5f,     1.0f, 0.0f,
-  0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
-  0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
- -0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
- -0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
- // Bottom face
+-0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+ 0.5f,  0.5f,  0.5f,     1.0f, 0.0f,
+ 0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+ 0.5f,  0.5f, -0.5f,     1.0f, 1.0f,
+-0.5f,  0.5f, -0.5f,     0.0f, 1.0f,
+-0.5f,  0.5f,  0.5f,     0.0f, 0.0f,
+// Bottom face
 -0.5f, -0.5f, -0.5f,     0.0f, 0.0f,
  0.5f, -0.5f, -0.5f,     1.0f, 0.0f,
  0.5f, -0.5f,  0.5f,     1.0f, 1.0f,
@@ -1136,7 +1224,7 @@ float cubeVertices[] = {
 -0.5f, -0.5f, -0.5f,     0.0f, 0.0f
 };
 
-// ------------------------- MAIN FUNCTION -------------------------
+// ========================== MAIN FUNCTION ==========================
 int main() {
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW\n";
@@ -1203,18 +1291,18 @@ int main() {
     glDeleteShader(fragmentShader);
 
     // ------------------------- Setup VAOs and VBOs -------------------------
-    unsigned int VAO, redVAO, waterVAO, stoneVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
+    unsigned int VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
     unsigned int oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
     unsigned int ancientTrunkVAO, ancientLeafVAO;
-    // For branch-type blocks:
-    unsigned int branchVAO, branchInstanceVBO;
-    unsigned int ancientBranchVAO, ancientBranchInstanceVBO;
+    unsigned int branchVAO, ancientBranchVAO;
+    // New VAOs for dirt, deep stone, and lava.
+    unsigned int dirtVAO, deepStoneVAO, lavaVAO;
 
     unsigned int VBO, instanceVBO;
     glGenVertexArrays(1, &VAO);
     glGenVertexArrays(1, &redVAO);
     glGenVertexArrays(1, &waterVAO);
-    glGenVertexArrays(1, &stoneVAO);
+    glGenVertexArrays(1, &grassVAO);
     glGenVertexArrays(1, &treeTrunkVAO);
     glGenVertexArrays(1, &treeLeafVAO);
     glGenVertexArrays(1, &waterLilyVAO);
@@ -1234,8 +1322,13 @@ int main() {
     glGenVertexArrays(1, &branchVAO);
     glGenVertexArrays(1, &ancientBranchVAO);
 
+    glGenVertexArrays(1, &dirtVAO);
+    glGenVertexArrays(1, &deepStoneVAO);
+    glGenVertexArrays(1, &lavaVAO);
+
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &instanceVBO);
+    GLuint branchInstanceVBO, ancientBranchInstanceVBO;
     glGenBuffers(1, &branchInstanceVBO);
     glGenBuffers(1, &ancientBranchInstanceVBO);
 
@@ -1258,7 +1351,7 @@ int main() {
     setupVAO(VAO, false);
     setupVAO(redVAO, false);
     setupVAO(waterVAO, true);
-    setupVAO(stoneVAO, true);
+    setupVAO(grassVAO, true);
     setupVAO(treeTrunkVAO, true);
     setupVAO(treeLeafVAO, true);
     setupVAO(waterLilyVAO, true);
@@ -1272,8 +1365,11 @@ int main() {
     setupVAO(bushLargeVAO, true);
     setupVAO(ancientTrunkVAO, true);
     setupVAO(ancientLeafVAO, true);
+    setupVAO(dirtVAO, true);
+    setupVAO(deepStoneVAO, true);
+    setupVAO(lavaVAO, true);
 
-    // Setup VAO for ground branches (type 14)
+    // Setup VAO for ground branches (block type 14)
     glBindVertexArray(branchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
@@ -1289,7 +1385,7 @@ int main() {
     glEnableVertexAttribArray(3);
     glVertexAttribDivisor(3, 1);
 
-    // Setup VAO for ancient branches (type 18) as full blocks.
+    // Setup VAO for ancient branches (block type 18) as full blocks.
     glBindVertexArray(ancientBranchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
@@ -1316,7 +1412,6 @@ int main() {
         glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
-        // Pass the time uniform for aurora animation.
         glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
         glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
@@ -1326,29 +1421,31 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
 
-        // Define 20 block colors.
-        glm::vec3 blockColors[20];
-        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f); // Stone
-        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);     // Water
-        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Pine/Fir trunk
-        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);  // Pine leaves
-        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);     // Origin debug
-        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);     // Water lily
-        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);  // Fallen log
-        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);  // Fir leaves
-        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);  // Oak trunk
-        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);   // Oak leaves
-        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);  // Leaf pile
-        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);  // Bush small
-        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);  // Bush medium
-        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);   // Bush large
-        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);     // Ground branch
-        // Index 15 unused.
-        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);    // Ancient trunk
-        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);     // Ancient leaves
-        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);     // Ancient branch
-        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);     // Aurora blocks (magenta)
-        glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
+        // Define 22 block colors.
+        glm::vec3 blockColors[22];
+        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f); // Grass (block type 0)
+        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);     // Water (block type 1)
+        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);  // Pine/Fir trunk (block type 2)
+        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);  // Pine leaves (block type 3)
+        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);     // Origin debug (block type 4)
+        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);     // Water lily (block type 5)
+        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);  // Fallen log (block type 6)
+        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);  // Fir leaves (block type 7)
+        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);  // Oak trunk (block type 8)
+        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);   // Oak leaves (block type 9)
+        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);  // Leaf pile (block type 10)
+        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);  // Bush small (block type 11)
+        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);  // Bush medium (block type 12)
+        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);   // Bush large (block type 13)
+        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);     // Ground branch (block type 14)
+        blockColors[15] = glm::vec3(0.59f, 0.29f, 0.0f);   // Dirt (block type 15)
+        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);    // Ancient trunk (block type 16)
+        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);     // Ancient leaves (block type 17)
+        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);     // Ancient branch (block type 18)
+        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);     // Aurora blocks (block type 19)
+        blockColors[20] = glm::vec3(0.5f, 0.5f, 0.5f);      // Deep Stone (block type 20)
+        blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);      // Lava (block type 21, orange)
+        glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
 
         // Build quadtree over chunks.
         int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
@@ -1366,8 +1463,11 @@ int main() {
         std::vector<Chunk*> visibleChunks = qt.query(extractFrustumPlanes(projection * view));
 
         // Collect instance data.
-        std::vector<glm::vec3> globalStoneInstances;
+        std::vector<glm::vec3> globalGrassInstances;
+        std::vector<glm::vec3> globalDirtInstances;
+        std::vector<glm::vec3> globalDeepStoneInstances;
         std::vector<glm::vec3> globalWaterInstances;
+        std::vector<glm::vec3> globalLavaInstances;
         std::vector<glm::vec3> globalTreeTrunkInstances;
         std::vector<glm::vec3> globalPineLeafInstances;
         std::vector<glm::vec3> globalFirLeafInstances;
@@ -1386,8 +1486,11 @@ int main() {
         std::vector<glm::vec3> globalAuroraInstances;
 
         for (Chunk* chunk : visibleChunks) {
-            globalStoneInstances.insert(globalStoneInstances.end(), chunk->stonePositions.begin(), chunk->stonePositions.end());
+            globalGrassInstances.insert(globalGrassInstances.end(), chunk->grassPositions.begin(), chunk->grassPositions.end());
+            globalDirtInstances.insert(globalDirtInstances.end(), chunk->dirtPositions.begin(), chunk->dirtPositions.end());
+            globalDeepStoneInstances.insert(globalDeepStoneInstances.end(), chunk->deepStonePositions.begin(), chunk->deepStonePositions.end());
             globalWaterInstances.insert(globalWaterInstances.end(), chunk->waterPositions.begin(), chunk->waterPositions.end());
+            globalLavaInstances.insert(globalLavaInstances.end(), chunk->lavaPositions.begin(), chunk->lavaPositions.end());
             globalTreeTrunkInstances.insert(globalTreeTrunkInstances.end(), chunk->treeTrunkPositions.begin(), chunk->treeTrunkPositions.end());
             globalPineLeafInstances.insert(globalPineLeafInstances.end(), chunk->treeLeafPositions.begin(), chunk->treeLeafPositions.end());
             globalFirLeafInstances.insert(globalFirLeafInstances.end(), chunk->firLeafPositions.begin(), chunk->firLeafPositions.end());
@@ -1417,7 +1520,7 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        // Helper lambda for branch drawing (for ground branches, instance data as vec4)
+        // Helper lambda for branch drawing (instance data as vec4)
         auto drawBranchInstances = [&](unsigned int vao, unsigned int branchVBO, int blockType, const std::vector<glm::vec4>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
@@ -1428,7 +1531,7 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec4), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        // For ancient branches (type 18)
+        // For ancient branches (block type 18)
         auto drawAncientBranchInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
@@ -1441,8 +1544,11 @@ int main() {
             };
 
         // Draw regular block types:
-        drawInstances(stoneVAO, 0, globalStoneInstances);
+        drawInstances(grassVAO, 0, globalGrassInstances);
+        drawInstances(dirtVAO, 15, globalDirtInstances);
+        drawInstances(deepStoneVAO, 20, globalDeepStoneInstances);
         drawInstances(waterVAO, 1, globalWaterInstances);
+        drawInstances(lavaVAO, 21, globalLavaInstances);
         drawInstances(treeTrunkVAO, 2, globalTreeTrunkInstances);
         drawInstances(treeLeafVAO, 3, globalPineLeafInstances);
         drawInstances(firLeafVAO, 7, globalFirLeafInstances);
@@ -1459,9 +1565,9 @@ int main() {
         drawAncientBranchInstances(ancientBranchVAO, 18, globalAncientBranchInstances);
         drawBranchInstances(branchVAO, branchInstanceVBO, 14, globalBranchInstances);
         // --- Draw Aurora Blocks (block type 19) ---
-        drawInstances(stoneVAO, 19, globalAuroraInstances);
+        drawInstances(waterVAO, 19, globalAuroraInstances);
 
-        // Draw the origin cube (blockType = 4)
+        // Draw the origin cube (block type 4)
         glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 4);
         {
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -1479,7 +1585,7 @@ int main() {
             glm::vec3 outlineColor = glm::vec3(1.0f, 1.0f, 1.0f);
             glm::vec3 oldBlockColor0 = blockColors[0];
             blockColors[0] = outlineColor;
-            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
+            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 0);
             glDisable(GL_DEPTH_TEST);
             glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -1489,7 +1595,7 @@ int main() {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             glEnable(GL_DEPTH_TEST);
             blockColors[0] = oldBlockColor0;
-            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 20, glm::value_ptr(blockColors[0]));
+            glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
         }
         // ====================================================================
 
@@ -1501,7 +1607,7 @@ int main() {
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &redVAO);
     glDeleteVertexArrays(1, &waterVAO);
-    glDeleteVertexArrays(1, &stoneVAO);
+    glDeleteVertexArrays(1, &grassVAO);
     glDeleteVertexArrays(1, &treeTrunkVAO);
     glDeleteVertexArrays(1, &treeLeafVAO);
     glDeleteVertexArrays(1, &waterLilyVAO);
@@ -1517,6 +1623,9 @@ int main() {
     glDeleteVertexArrays(1, &ancientLeafVAO);
     glDeleteVertexArrays(1, &branchVAO);
     glDeleteVertexArrays(1, &ancientBranchVAO);
+    glDeleteVertexArrays(1, &dirtVAO);
+    glDeleteVertexArrays(1, &deepStoneVAO);
+    glDeleteVertexArrays(1, &lavaVAO);
 
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &instanceVBO);
