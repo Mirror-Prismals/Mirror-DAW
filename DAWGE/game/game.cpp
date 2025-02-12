@@ -57,11 +57,11 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 5.0f; // For testing.
+const float RENDER_DISTANCE = 30.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
 // Extend deep stone further down.
-const int MIN_Y = -64;
+const int MIN_Y = -4;
 
 // Constants for the standard water cave generation.
 const float CAVE_SCALE = 0.04f;    // Lower scale -> larger cave features.
