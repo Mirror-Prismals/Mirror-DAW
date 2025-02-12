@@ -62,7 +62,7 @@
 // ==================== Global Configuration ====================
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 10.0f; // For testing.
+const float RENDER_DISTANCE = 30.0f; // For testing.
 const int CHUNK_SIZE = 16;
 
 // (MIN_Y is no longer used to extend stone; see below.)
@@ -731,7 +731,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                 }
                 int seaLevelInt = static_cast<int>(terrain.height);
                 // Only add four stone layers directly below the water.
-                for (int i = 1; i <= 4; i++) {
+                for (int i = 1; i <= 1; i++) {
                     int y = seaLevelInt - i;
                     chunk.deepStonePositions.push_back(glm::vec3(worldX, y, worldZ));
                 }
@@ -1391,7 +1391,7 @@ int main() {
         lastFrame = currentFrame;
         processInput(window);
         updateChunks();
-        glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
+        glClearColor(0.0f, 0.749f, 1.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
         glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
@@ -1404,7 +1404,7 @@ int main() {
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
         glm::vec3 blockColors[22];
         blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f);
-        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);
+        blockColors[1] = glm::vec3(0.0f, 0.3f, 0.3f);
         blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);
         blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);
         blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);
