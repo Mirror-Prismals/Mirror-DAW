@@ -39,6 +39,12 @@
 //      lava (block type 21, orange) is used.
 //      **New:** However, if a cell is above sea level (y ≥ 0) then even if the cave noise would
 //      carve out a cave, we simply place stone.
+//  16) NEW: Blob elevation offsets for large‐scale terrain variation.
+//      The world is divided into roughly 1000–block–wide cells whose overall base height
+//      is determined by a smooth (spline/bilinear) interpolation between random values.
+//      This means that if you travel for 1000 blocks you may suddenly encounter a large area
+//      where the general level is much higher (or lower)—producing real tall mountains,
+//      roughly as tall as the trees themselves.
 // ======================================================================
 
 #include <glad/glad.h>
@@ -222,21 +228,41 @@ public:
     }
 };
 
+// Existing noise instances.
 PerlinNoise continentalNoise(1);
 PerlinNoise elevationNoise(2);
 PerlinNoise ridgeNoise(3);
 PerlinNoise caveNoise(5);
 PerlinNoise auroraNoise(4);
-// NEW: Perlin noise instance for lava caves.
 PerlinNoise lavaCaveNoise(6);
+
+// ----------------- NEW: Mountain Noise Instance -----------------
+// (No longer used in the final terrain height; kept here for reference.)
+// PerlinNoise mountainNoise(7);
+
+// ----------------- NEW: Blob Elevation Offset -----------------
+// The world is divided into cells of roughly 1000 blocks in diameter.
+// Each cell is assigned a random height offset via getBlobHeight(), and then the
+// offset for any point is obtained by bilinearly interpolating between the four cell corners.
+double getBlobHeight(int cx, int cz) {
+    // Use a simple hash to generate a pseudo-random value between -80 and +80.
+    int n = (cx * 73856093) ^ (cz * 19349663);
+    n = (n >> 13) ^ n;
+    double r = 1.0 - ((n * (n * n * 15731 + 789221) + 1376312589) & 0x7fffffff) / 1073741824.0;
+    return r * 80.0;
+}
 
 // ==================== Terrain Generation ====================
 struct TerrainPoint { double height; bool isLand; };
 
+// Modified terrain function that now adds a blob-based elevation offset.
+// The world is divided into roughly 1000-block cells, and each cell gets a random offset.
+// The offset for any (x,z) is obtained by bilinear (smoothstep) interpolation between the four cell corners.
 TerrainPoint getTerrainHeight(double x, double z) {
     const double CONTINENTAL_SCALE = 100.0;
     const double ELEVATION_SCALE = 50.0;
     const double RIDGE_SCALE = 25.0;
+    // Original continental/elevation/ridge factors:
     double continental = continentalNoise.noise(x / CONTINENTAL_SCALE, 0, z / CONTINENTAL_SCALE);
     continental = (continental + 1.0) / 2.0;
     bool isLand = continental > 0.48;
@@ -245,7 +271,26 @@ TerrainPoint getTerrainHeight(double x, double z) {
     double elevation = elevationNoise.noise(x / ELEVATION_SCALE, 0, z / ELEVATION_SCALE);
     elevation = (elevation + 1.0) / 2.0;
     double ridge = ridgeNoise.ridgeNoise(x / RIDGE_SCALE, 0, z / RIDGE_SCALE);
-    double height = elevation * 8.0 + ridge * 12.0;
+
+    // Compute blob-based offset.
+    double blobSize = 1000.0;
+    double cellX = std::floor(x / blobSize);
+    double cellZ = std::floor(z / blobSize);
+    double localX = (x - cellX * blobSize) / blobSize; // in [0,1]
+    double localZ = (z - cellZ * blobSize) / blobSize; // in [0,1]
+    double h00 = getBlobHeight((int)cellX, (int)cellZ);
+    double h10 = getBlobHeight((int)cellX + 1, (int)cellZ);
+    double h01 = getBlobHeight((int)cellX, (int)cellZ + 1);
+    double h11 = getBlobHeight((int)cellX + 1, (int)cellZ + 1);
+    // Smoothstep interpolation factors.
+    double sx = localX * localX * (3 - 2 * localX);
+    double sz = localZ * localZ * (3 - 2 * localZ);
+    double h0 = h00 * (1 - sx) + h10 * sx;
+    double h1 = h01 * (1 - sx) + h11 * sx;
+    double blobOffset = h0 * (1 - sz) + h1 * sz;
+
+    // Combine the factors. Adjust multipliers as desired.
+    double height = elevation * 8.0 + ridge * 12.0 + blobOffset;
     return { height, true };
 }
 
@@ -1095,7 +1140,7 @@ void processInput(GLFWwindow* window) {
 
 // ==================== VIEW (Rendering) ====================
 // The vertex shader now also accepts a time uniform and, for blockType 19 (aurora),
-// applies a slight vertical oscillation to the block positions. The blockColors array
+// applies a slight animated vertical oscillation to the block positions. The blockColors array
 // has been increased to 22 elements to include the new lava block (block type 21).
 // ------------------------- Shader Sources -------------------------
 const char* vertexShaderSource = R"(
