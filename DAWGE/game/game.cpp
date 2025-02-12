@@ -1446,12 +1446,12 @@ int main() {
         blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);  // Bush medium (block type 12)
         blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);   // Bush large (block type 13)
         blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);     // Ground branch (block type 14)
-        blockColors[15] = glm::vec3(0.59f, 0.29f, 0.0f);   // Dirt (block type 15)
+        blockColors[15] = glm::vec3(0.44f, 0.39f, 0.32f);   // Dirt (block type 15)
         blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);    // Ancient trunk (block type 16)
         blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);     // Ancient leaves (block type 17)
         blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);     // Ancient branch (block type 18)
         blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);     // Aurora blocks (block type 19)
-        blockColors[20] = glm::vec3(0.5f, 0.5f, 0.5f);      // Deep Stone (block type 20)
+        blockColors[20] = glm::vec3(0.35f, 0.5f, 0.39f);      // Deep Stone (block type 20)
         blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);      // Lava (block type 21, orange)
         glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 22, glm::value_ptr(blockColors[0]));
 
