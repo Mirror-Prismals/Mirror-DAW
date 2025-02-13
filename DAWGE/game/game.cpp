@@ -65,7 +65,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 20.0f;
+const float RENDER_DISTANCE = 6.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
@@ -915,7 +915,7 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
 void processInput(GLFWwindow* window) {
     if (fullscreenMap)
         return; // Disable movement when big map is active.
-    const float cameraSpeed = 20.0f * deltaTime;
+    const float cameraSpeed = 80.0f * deltaTime;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraFront;
     if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
