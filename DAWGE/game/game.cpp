@@ -174,11 +174,11 @@ TerrainPoint getTerrainHeight(double x, double z) {
         height = elevation * 128.0 + ridge * 96.0;
     }
     // South ocean: chunks with 20 <= cz < 40
-    if (chunkZ >= 20 && chunkZ < 40) {
+    if (chunkZ >= 130 && chunkZ < 290) {
         return { -4.0, false };
     }
     // North ocean: for the north lake (between -40 and -20)
-    if (chunkZ <= -20 && chunkZ > -40) {
+    if (chunkZ <= -130 && chunkZ > -190) {
         return { -4.0, false };
     }
     return { height, true };
@@ -208,9 +208,9 @@ int getChunkTopBlock(int cx, int cz) {
     if (waterSamples > 0)
         return 1; // water
     // Otherwise decide biome based solely on chunk coordinates.
-    if (cx >= 40)
+    if (cx >= 160)
         return 22; // desert top
-    if (cz <= -40)
+    if (cz <= -130)
         return 23; // north pole top (snow)
     return 0; // otherwise, forest (grass)
 }
@@ -607,9 +607,9 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
             }
             else {
                 int groundHeight = static_cast<int>(std::floor(terrain.height));
-                if (chunkX >= 40)
+                if (chunkX >= 160)
                     chunk.sandPositions.push_back(glm::vec3(worldX, groundHeight, worldZ));
-                else if (chunkZ <= -40)
+                else if (chunkZ <= -160)
                     chunk.snowPositions.push_back(glm::vec3(worldX, groundHeight, worldZ));
                 else
                     chunk.grassPositions.push_back(glm::vec3(worldX, groundHeight, worldZ));
@@ -1125,7 +1125,7 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                     else {
                         int cx = x / CHUNK_SIZE;
                         int cz = z / CHUNK_SIZE;
-                        if (cx >= 40)
+                        if (cx >= 120)
                             blockType = 22;
                         else if (cz <= -40)
                             blockType = 23;
@@ -1251,7 +1251,7 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         int mapHeight = 400 * CHUNK_SIZE;
         float halfW = mapWidth / 2.0f;
         float halfH = mapHeight / 2.0f;
-        glm::mat4 ortho = glm::ortho(-halfW, halfW, -halfH, halfH, -1.0f, 1.0f);
+        glm::mat4 ortho = glm::ortho(-halfW, halfW, halfH, -halfH, -1.0f, 1.0f);
         glUseProgram(minimapShaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(minimapShaderProgram, "ortho"), 1, GL_FALSE, glm::value_ptr(ortho));
         glBindBuffer(GL_ARRAY_BUFFER, minimapVBO);
