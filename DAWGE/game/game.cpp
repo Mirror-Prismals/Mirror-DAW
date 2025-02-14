@@ -1,7 +1,8 @@
 // ======================================================================
 // VoxelGame.cpp
 // A single–file version of a Minecraft–style clone with multiple biomes,
-// now with a dynamic skybox whose colors change based on real (Eastern) time.
+// now with a dynamic skybox, sun and moon whose positions and brightness 
+// follow real Eastern time.
 // ======================================================================
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -20,7 +21,7 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
-#include <ctime>        // For system time
+#include <ctime>
 
 // ---------------------- ChunkPos Definition and Hash Specialization ----------------------
 struct ChunkPos {
@@ -42,11 +43,13 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 4.0f;
+const float RENDER_DISTANCE = 24.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
 // ---------------------- Global Variables ----------------------
+
+// Player/camera and movement variables
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
 float cameraYaw = -90.0f;
 float pitch = 0.0f;
@@ -74,9 +77,11 @@ bool bigMapDirty = true;
 std::vector<float> bigMapInterleaved;
 float bigMapPanX = 0.0f;
 float bigMapPanZ = 0.0f;
+bool minimapEnabled = true;
 
-// ---------------------- Skybox Quad Data and Shaders ----------------------
+// ---------------------- Skybox Data and Shaders ----------------------
 float skyboxQuadVertices[] = {
+    // positions for full-screen quad (in clip space)
     -1.0f,  1.0f,
     -1.0f, -1.0f,
      1.0f, -1.0f,
@@ -99,15 +104,51 @@ const char* skyboxFragmentShaderSource = R"(
 #version 330 core
 in vec2 TexCoord;
 out vec4 FragColor;
+
 uniform vec3 skyTop;
 uniform vec3 skyBottom;
+uniform float time;        // Global time
+uniform vec2 starOffset;   // Derived from camera rotation
+
+// Simple random function based on input coordinates.
+float rand(vec2 co) {
+    return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
 void main(){
+    // Base sky gradient.
     vec3 color = mix(skyBottom, skyTop, TexCoord.y);
+
+    // Use the starOffset (derived from camera yaw/pitch) to adjust the star field.
+    vec2 starUV = (TexCoord + starOffset) * 1000.0;
+    vec2 cellId = floor(starUV);
+    
+    // Only a few cells become stars.
+    float starValue = rand(cellId);
+    
+    // Lower threshold to increase star density.
+    if(starValue > 0.995) {
+        // Two independent random values: one for frequency and one for phase.
+        float freqRand  = rand(cellId + vec2(1.0, 1.0));
+        float phaseRand = rand(cellId + vec2(2.0, 3.0));
+        
+        // Each star gets a random frequency between 3.0 and 5.0; slow twinkle with time * 0.2.
+        float frequency = 3.0 + freqRand * 2.0;
+        float twinkle = 0.5 + 0.5 * sin(time * frequency * 0.2 + phaseRand * 6.2831);
+
+        // Create a round star shape.
+        vec2 f = fract(starUV) - 0.5;
+        float dist = length(f);
+        float starAlpha = smoothstep(0.3, 0.2, dist); // Adjust for star size/softness
+
+        // Add the star (additively) to the sky color.
+        color += vec3(twinkle) * starAlpha;
+    }
+    
     FragColor = vec4(color, 1.0);
 }
 )";
 
-// ---------------------- Skybox Quad Setup ----------------------
 GLuint skyboxVAO, skyboxVBO;
 void setupSkyboxQuad() {
     glGenVertexArrays(1, &skyboxVAO);
@@ -120,53 +161,78 @@ void setupSkyboxQuad() {
     glBindVertexArray(0);
 }
 
-// ---------------------- Utility: Compile Shader Program ----------------------
-GLuint compileShaderProgram(const char* vShaderSrc, const char* fShaderSrc) {
-    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vShaderSrc, NULL);
-    glCompileShader(vertexShader);
-    int success;
-    char infoLog[512];
-    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-        std::cout << "Vertex Shader Compilation Error:\n" << infoLog << "\n";
-    }
-    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fShaderSrc, NULL);
-    glCompileShader(fragmentShader);
-    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-        std::cout << "Fragment Shader Compilation Error:\n" << infoLog << "\n";
-    }
-    GLuint program = glCreateProgram();
-    glAttachShader(program, vertexShader);
-    glAttachShader(program, fragmentShader);
-    glLinkProgram(program);
-    glGetProgramiv(program, GL_LINK_STATUS, &success);
-    if (!success) {
-        glGetProgramInfoLog(program, 512, NULL, infoLog);
-        std::cout << "Shader Program Linking Error:\n" << infoLog << "\n";
-    }
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-    return program;
+// ---------------------- Sun/Moon Data and Shader Sources ----------------------
+// We will render the sun and moon as billboards using a simple quad.
+const char* sunMoonVertexShaderSource = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+out vec2 TexCoord;
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+void main(){
+    TexCoord = aPos * 0.5 + 0.5;
+    gl_Position = projection * view * model * vec4(aPos, 0.0, 1.0);
+}
+)";
+
+const char* sunMoonFragmentShaderSource = R"(
+#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+uniform vec3 color;       // Sun or moon base color
+uniform float brightness; // Intensity factor
+void main(){
+    // Calculate distance from center of the quad.
+    float d = distance(TexCoord, vec2(0.5));
+    // Create a solid disk with a soft edge.
+    float diskAlpha = smoothstep(0.5, 0.45, d);
+    // Add an outer glow effect.
+    float glowAlpha = 1.0 - smoothstep(0.45, 0.5, d);
+
+    // Combine disk and glow.
+    float finalAlpha = clamp(diskAlpha + 0.3 * glowAlpha, 0.0, 1.0);
+    FragColor = vec4(color * brightness, finalAlpha * brightness);
+}
+)";
+
+GLuint sunMoonShaderProgram;
+GLuint sunMoonVAO, sunMoonVBO;
+
+// Setup a quad for sun/moon (in local object space, centered at origin)
+void setupSunMoonQuad() {
+    float quadVertices[] = {
+        -1.0f,  1.0f,
+        -1.0f, -1.0f,
+         1.0f, -1.0f,
+        -1.0f,  1.0f,
+         1.0f, -1.0f,
+         1.0f,  1.0f
+    };
+    glGenVertexArrays(1, &sunMoonVAO);
+    glGenBuffers(1, &sunMoonVBO);
+    glBindVertexArray(sunMoonVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, sunMoonVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(quadVertices), quadVertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
 }
 
 // ---------------------- Sky Color Interpolation ----------------------
 struct SkyColorKey {
-    float time;
+    float time; // Fraction of day (0.0–1.0)
     glm::vec3 top;
     glm::vec3 bottom;
 };
 
+// Key colors (converted from hex to [0,1] floats)
 SkyColorKey skyKeys[5] = {
-    { 0.0f, glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f), glm::vec3(0.0f, 0.0f, 0.0f) },
-    { 0.25f, glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(128 / 255.0f, 128 / 255.0f, 1.0f) },
-    { 0.5f, glm::vec3(135 / 255.0f, 206 / 255.0f, 235 / 255.0f), glm::vec3(254 / 255.0f, 254 / 255.0f, 254 / 255.0f) },
-    { 0.75f, glm::vec3(0.0f, 128 / 255.0f, 128 / 255.0f), glm::vec3(1.0f, 71 / 255.0f, 0.0f) },
-    { 1.0f, glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f), glm::vec3(0.0f, 0.0f, 0.0f) }
+    { 0.0f,  glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f),  glm::vec3(0.0f, 0.0f, 0.0f) },     // Night
+    { 0.25f, glm::vec3(0.0f, 0.0f, 1.0f),                 glm::vec3(128 / 255.0f, 128 / 255.0f, 1.0f) }, // Morning
+    { 0.5f,  glm::vec3(135 / 255.0f, 206 / 255.0f, 235 / 255.0f), glm::vec3(254 / 255.0f, 254 / 255.0f, 254 / 255.0f) }, // Afternoon
+    { 0.75f, glm::vec3(0.0f, 128 / 255.0f, 128 / 255.0f),       glm::vec3(1.0f, 71 / 255.0f, 0.0f) },          // Evening
+    { 1.0f,  glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f),    glm::vec3(0.0f, 0.0f, 0.0f) }      // Night
 };
 
 void getCurrentSkyColors(float dayFraction, glm::vec3& currentTop, glm::vec3& currentBottom) {
@@ -183,7 +249,7 @@ void getCurrentSkyColors(float dayFraction, glm::vec3& currentTop, glm::vec3& cu
     currentBottom = glm::mix(skyKeys[lowerIndex].bottom, skyKeys[upperIndex].bottom, t);
 }
 
-// ---------------------- Forward Declarations for Other Functions ----------------------
+// ---------------------- Forward Declarations ----------------------
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
@@ -239,6 +305,38 @@ PerlinNoise ridgeNoise(3);
 PerlinNoise caveNoise(5);
 PerlinNoise auroraNoise(4);
 PerlinNoise lavaCaveNoise(6);
+GLuint compileShaderProgram(const char* vShaderSrc, const char* fShaderSrc) {
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vShaderSrc, NULL);
+    glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cout << "Vertex Shader Compilation Error:\n" << infoLog << "\n";
+    }
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fShaderSrc, NULL);
+    glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cout << "Fragment Shader Compilation Error:\n" << infoLog << "\n";
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
+        std::cout << "Shader Program Linking Error:\n" << infoLog << "\n";
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    return program;
+}
 
 // ---------------------- Terrain Generation ----------------------
 struct TerrainPoint { double height; bool isLand; };
@@ -355,7 +453,6 @@ std::vector<Plane> extractFrustumPlanes(const glm::mat4& VP) {
     planes[5].normal.y = VP[1][3] - VP[1][2];
     planes[5].normal.z = VP[2][3] - VP[2][2];
     planes[5].d = VP[3][3] - VP[3][2];
-
     for (int i = 0; i < 6; i++) {
         float len = glm::length(planes[i].normal);
         planes[i].normal /= len;
@@ -806,8 +903,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 std::vector<glm::vec3> pineCanopy = generatePineCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                                 chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                             }
-                        }
-                        {
+                        } {
                             int hashValFir = std::abs((intWorldX * 83492791) ^ (intWorldZ * 19349663));
                             glm::vec3 firBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValFir % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, firBase)) {
@@ -822,8 +918,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 std::vector<glm::vec3> firCanopy = generateFirCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                                 chunk.firLeafPositions.insert(chunk.firLeafPositions.end(), firCanopy.begin(), firCanopy.end());
                             }
-                        }
-                        {
+                        } {
                             int hashValOak = std::abs((intWorldX * 92821) ^ (intWorldZ * 123457));
                             glm::vec3 oakBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValOak % 1000 < 1 && !treeCollision(chunk.oakTrunkPositions, oakBase)) {
@@ -838,8 +933,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                 std::vector<glm::vec3> oakCanopy = generateOakCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                                 chunk.oakLeafPositions.insert(chunk.oakLeafPositions.end(), oakCanopy.begin(), oakCanopy.end());
                             }
-                        }
-                        {
+                        } {
                             int hashValAncient = std::abs((intWorldX * 112233) ^ (intWorldZ * 445566));
                             glm::vec3 ancientBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValAncient % 3000 < 1 && !treeCollision(chunk.ancientTrunkPositions, ancientBase)) {
@@ -1028,7 +1122,19 @@ void updateChunks() {
 }
 
 // ---------------------- Input Handling ----------------------
+
 void processInput(GLFWwindow* window) {
+    static bool nWasPressed = false;
+    if (glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS) {
+        if (!nWasPressed) {
+            minimapEnabled = !minimapEnabled;
+            nWasPressed = true;
+        }
+    }
+    else {
+        nWasPressed = false;
+    }
+
     static bool pWasPressed = false;
     if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
         if (!pWasPressed) {
@@ -1149,9 +1255,9 @@ void toggleMapMode(GLFWwindow* window) {
     }
 }
 
-// ---------------------- Shader Sources ----------------------
+// ---------------------- Shader Sources for Main Scene, Minimap, and Sun/Moon ----------------------
 
-// --- Vertex Shader with normals and instancing ---
+// --- Main Scene Vertex Shader (with normals, texcoords, instancing) ---
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
@@ -1210,7 +1316,7 @@ void main(){
 }
 )";
 
-// --- Fragment Shader with simple directional lighting ---
+// --- Main Scene Fragment Shader ---
 const char* fragmentShaderSource = R"(
 #version 330 core
 in vec2 TexCoord;
@@ -1248,7 +1354,7 @@ void main(){
 }
 )";
 
-// --- Minimap Shaders ---
+// --- Minimap Vertex Shader ---
 const char* minimapVertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec2 aPos;
@@ -1261,6 +1367,7 @@ void main(){
 }
 )";
 
+// --- Minimap Fragment Shader ---
 const char* minimapFragmentShaderSource = R"(
 #version 330 core
 in vec3 ourColor;
@@ -1270,8 +1377,11 @@ void main(){
 }
 )";
 
+// ---------------------- Sun/Moon Shaders (compiled above) ----------------------
+
 // ---------------------- Cube Vertex Data ----------------------
 float cubeVertices[] = {
+    // Each vertex: position (3), normal (3), texCoord (2)
     // Front face (normal 0,0,1)
    -0.5f, -0.5f,  0.5f,    0,0,1,    0.0f, 0.0f,
     0.5f, -0.5f,  0.5f,    0,0,1,    1.0f, 0.0f,
@@ -1279,7 +1389,6 @@ float cubeVertices[] = {
     0.5f,  0.5f,  0.5f,    0,0,1,    1.0f, 1.0f,
    -0.5f,  0.5f,  0.5f,    0,0,1,    0.0f, 1.0f,
    -0.5f, -0.5f,  0.5f,    0,0,1,    0.0f, 0.0f,
-
    // Right face (normal 1,0,0)
    0.5f, -0.5f,  0.5f,    1,0,0,    0.0f, 0.0f,
    0.5f, -0.5f, -0.5f,    1,0,0,    1.0f, 0.0f,
@@ -1287,7 +1396,6 @@ float cubeVertices[] = {
    0.5f,  0.5f, -0.5f,    1,0,0,    1.0f, 1.0f,
    0.5f,  0.5f,  0.5f,    1,0,0,    0.0f, 1.0f,
    0.5f, -0.5f,  0.5f,    1,0,0,    0.0f, 0.0f,
-
    // Back face (normal 0,0,-1)
    0.5f, -0.5f, -0.5f,    0,0,-1,   0.0f, 0.0f,
   -0.5f, -0.5f, -0.5f,    0,0,-1,   1.0f, 0.0f,
@@ -1295,7 +1403,6 @@ float cubeVertices[] = {
   -0.5f,  0.5f, -0.5f,    0,0,-1,   1.0f, 1.0f,
    0.5f,  0.5f, -0.5f,    0,0,-1,   0.0f, 1.0f,
    0.5f, -0.5f, -0.5f,    0,0,-1,   0.0f, 0.0f,
-
    // Left face (normal -1,0,0)
   -0.5f, -0.5f, -0.5f,   -1,0,0,    0.0f, 0.0f,
   -0.5f, -0.5f,  0.5f,   -1,0,0,    1.0f, 0.0f,
@@ -1303,7 +1410,6 @@ float cubeVertices[] = {
   -0.5f,  0.5f,  0.5f,   -1,0,0,    1.0f, 1.0f,
   -0.5f,  0.5f, -0.5f,   -1,0,0,    0.0f, 1.0f,
   -0.5f, -0.5f, -0.5f,   -1,0,0,    0.0f, 0.0f,
-
   // Top face (normal 0,1,0)
  -0.5f,  0.5f,  0.5f,    0,1,0,    0.0f, 0.0f,
   0.5f,  0.5f,  0.5f,    0,1,0,    1.0f, 0.0f,
@@ -1311,7 +1417,6 @@ float cubeVertices[] = {
   0.5f,  0.5f, -0.5f,    0,1,0,    1.0f, 1.0f,
  -0.5f,  0.5f, -0.5f,    0,1,0,    0.0f, 1.0f,
  -0.5f,  0.5f,  0.5f,    0,1,0,    0.0f, 0.0f,
-
  // Bottom face (normal 0,-1,0)
 -0.5f, -0.5f, -0.5f,    0,-1,0,   0.0f, 0.0f,
  0.5f, -0.5f, -0.5f,    0,-1,0,   1.0f, 0.0f,
@@ -1321,8 +1426,11 @@ float cubeVertices[] = {
 -0.5f, -0.5f, -0.5f,    0,-1,0,   0.0f, 0.0f
 };
 
-// ---------------------- Minimap Rendering Function ----------------------
+// ---------------------- Minimap Rendering ----------------------
 void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO) {
+    if (!minimapEnabled)
+        return;
+
     if (!fullscreenMap) {
         static double lastMapUpdateTime = 0.0;
         static std::vector<float> cachedInterleaved;
@@ -1353,11 +1461,11 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                             blockType = 0;
                     }
                     vertices.push_back(glm::vec2(x, z));
-                    vertices.push_back(glm::vec2(x + 1, z));
-                    vertices.push_back(glm::vec2(x + 1, z + 1));
+                    vertices.push_back(glm::vec2(x + CHUNK_SIZE, z));
+                    vertices.push_back(glm::vec2(x + CHUNK_SIZE, z + CHUNK_SIZE));
                     vertices.push_back(glm::vec2(x, z));
-                    vertices.push_back(glm::vec2(x + 1, z + 1));
-                    vertices.push_back(glm::vec2(x, z + 1));
+                    vertices.push_back(glm::vec2(x + CHUNK_SIZE, z + CHUNK_SIZE));
+                    vertices.push_back(glm::vec2(x, z + CHUNK_SIZE));
                     glm::vec3 col;
                     switch (blockType) {
                     case 0:  col = glm::vec3(0.19f, 0.66f, 0.32f); break;
@@ -1553,12 +1661,15 @@ int main() {
         std::cout << "Failed to initialize GLAD\n";
         return -1;
     }
-
+    // Compile shader programs
     GLuint shaderProgram = compileShaderProgram(vertexShaderSource, fragmentShaderSource);
     GLuint minimapShaderProgram = compileShaderProgram(minimapVertexShaderSource, minimapFragmentShaderSource);
     GLuint skyboxShaderProgram = compileShaderProgram(skyboxVertexShaderSource, skyboxFragmentShaderSource);
+    sunMoonShaderProgram = compileShaderProgram(sunMoonVertexShaderSource, sunMoonFragmentShaderSource);
     setupSkyboxQuad();
+    setupSunMoonQuad();
 
+    // Setup VAOs/VBOs for scene geometry (a lot of them)...
     GLuint VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
     GLuint oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
     GLuint ancientTrunkVAO, ancientLeafVAO;
@@ -1675,6 +1786,7 @@ int main() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // ---------------------- Main Render Loop ----------------------
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -1685,6 +1797,7 @@ int main() {
         glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        // Compute view and projection matrices.
         glm::vec3 front;
         front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         front.y = sin(glm::radians(pitch));
@@ -1696,22 +1809,59 @@ int main() {
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
 
+        // Get Eastern local time.
         time_t currentTime = time(0);
         tm localTimeInfo;
         localtime_s(&localTimeInfo, &currentTime);
         int secondsSinceMidnight = localTimeInfo.tm_hour * 3600 + localTimeInfo.tm_min * 60 + localTimeInfo.tm_sec;
         float dayFraction = secondsSinceMidnight / 86400.0f;
         float angle = dayFraction * 2.0f * 3.14159f;
-        glm::vec3 sunDir = glm::normalize(glm::vec3(cos(angle), sin(angle), 0.5f));
-        float brightness = (sin(angle) + 1.0f) / 2.0f;
-        glm::vec3 ambientLight = glm::vec3(0.2f + brightness * 0.3f);
-        glm::vec3 diffuseLight = glm::vec3(0.3f + brightness * 0.7f);
+        // Compute the full hour as a float.
+        float rawHour = localTimeInfo.tm_hour + localTimeInfo.tm_min / 60.0f + localTimeInfo.tm_sec / 3600.0f;
+        float hour = fmod(rawHour, 24.0f);
 
+        glm::vec3 sunDir, moonDir;
+        float brightnessMain = 0.0f;
+
+        if (hour >= 6.0f && hour < 18.0f) {
+            // Daytime: Sun rises at 6:00 (east), is overhead at 12:00, and sets at 18:00 (west)
+            float u = (hour - 6.0f) / 12.0f; // u in [0,1]
+            sunDir = glm::vec3(cos(u * 3.14159f), sin(u * 3.14159f), 0.0f);
+            moonDir = -sunDir;
+            // Use a sine curve so brightness is 0 at sunrise/sunset and peaks at noon.
+            brightnessMain = sin(u * 3.14159f);
+        }
+        else {
+            // Nighttime: For times before 6:00, add 24 to wrap properly.
+            float adjustedHour = (hour < 6.0f) ? hour + 24.0f : hour;
+            float u = (adjustedHour - 18.0f) / 12.0f; // u in [0,1] from 18:00 to 6:00
+            moonDir = glm::vec3(cos(u * 3.14159f), sin(u * 3.14159f), 0.0f);
+            sunDir = -moonDir;
+            brightnessMain = 0.0f; // No sun brightness at night
+        }
+
+        // Define ambient and diffuse light for the main scene.
+        glm::vec3 ambientLightMain = glm::vec3(0.2f + brightnessMain * 0.3f);
+        glm::vec3 diffuseLightMain = glm::vec3(0.3f + brightnessMain * 0.7f);
+
+        // Compute world positions for the sun and moon (placed far away).
+        glm::vec3 sunWorldPos = cameraPos + sunDir * 1000.0f;
+        glm::vec3 moonWorldPos = cameraPos + moonDir * 1000.0f;
+
+        // Determine skybox colors.
         glm::vec3 skyTop, skyBottom;
         getCurrentSkyColors(dayFraction, skyTop, skyBottom);
+        // Derive an offset from your camera's yaw and pitch.
+        // This offset will make the star field rotate with the camera so the stars appear fixed in the sky.
+        float offsetX = cameraYaw / 360.0f;  // Normalize yaw to a 0-1 range.
+        float offsetY = pitch / 180.0f;      // Use pitch if available; otherwise, set to 0.
+        glUniform2f(glGetUniformLocation(skyboxShaderProgram, "starOffset"), offsetX, offsetY);
 
+        // --- Draw Skybox ---
         glDepthMask(GL_FALSE);
         glUseProgram(skyboxShaderProgram);
+        glUniform1f(glGetUniformLocation(skyboxShaderProgram, "time"), currentFrame);
+        // Do not override starOffset here—use the value computed above.
         glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyTop"), 1, glm::value_ptr(skyTop));
         glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyBottom"), 1, glm::value_ptr(skyBottom));
         glBindVertexArray(skyboxVAO);
@@ -1719,11 +1869,84 @@ int main() {
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
 
+        // --- Compute Sun and Moon positions based on real time ---
+
+        glm::vec3 sunDirBillboard(0.0f), moonDirBillboard(0.0f);
+        float sunBrightness = 0.0f, moonBrightness = 0.0f;
+        // Sun visible from 6:00 to 18:00.
+        if (hour >= 6.0f && hour < 18.0f) {
+            float u = (hour - 6.0f) / 12.0f; // 0 to 1
+            float elev = sin(u * 3.14159f);   // 0 at sunrise, 1 at noon, 0 at sunset.
+            float azimuth = glm::radians(90.0f + u * 180.0f); // from 90 (east) to 270 (west)
+            sunDirBillboard.x = cos(glm::radians(elev * 90.0f)) * sin(azimuth);
+            sunDirBillboard.y = elev;
+            sunDirBillboard.z = cos(glm::radians(elev * 90.0f)) * cos(azimuth);
+            sunBrightness = elev; // simple brightness
+            moonBrightness = 0.0f;
+        }
+        else {
+            // Moon visible outside 6:00-18:00.
+            float v = 0.0f;
+            if (hour < 6.0f)
+                v = hour / 6.0f; // 0 to 1 from midnight to 6am.
+            else
+                v = (hour - 18.0f) / 6.0f; // 0 to 1 from 18:00 to midnight.
+            float elev = sin(v * 3.14159f);
+            float azimuth = glm::radians(90.0f + v * 180.0f);
+            moonDirBillboard.x = cos(glm::radians(elev * 90.0f)) * sin(azimuth);
+            moonDirBillboard.y = elev;
+            moonDirBillboard.z = cos(glm::radians(elev * 90.0f)) * cos(azimuth);
+            moonBrightness = elev;
+            sunBrightness = 0.0f;
+        }
+
+        // --- Render Sun/Moon ---
+        glDepthMask(GL_FALSE);
+        glUseProgram(sunMoonShaderProgram);
+        // Set common uniforms for sun/moon shader.
+        glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        // Render sun if brightness > 0
+        if (sunBrightness > 0.01f) {
+            // Compute billboard matrix so the quad always faces the camera.
+            glm::mat4 model = glm::translate(glm::mat4(1.0f), sunWorldPos);
+            glm::mat3 camRotation = glm::mat3(view);
+            glm::mat3 billboard = glm::inverse(camRotation);
+            model *= glm::mat4(billboard);
+            model = glm::scale(model, glm::vec3(50.0f)); // Adjust sun size here.
+            glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
+            glUniform3f(glGetUniformLocation(sunMoonShaderProgram, "color"), 1.0f, 1.0f, 0.0f); // sun is yellowish.
+            glUniform1f(glGetUniformLocation(sunMoonShaderProgram, "brightness"), sunBrightness);
+            glBindVertexArray(sunMoonVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+        // Render moon with proper billboarding
+        if (moonBrightness > 0.01f) {
+            // Create model matrix for the moon that always faces the camera.
+            glm::mat4 moonModel = glm::translate(glm::mat4(1.0f), moonWorldPos);
+            // Extract only the rotation from the view matrix.
+            glm::mat3 camRotation = glm::mat3(view);
+            // Invert the camera rotation to cancel it out.
+            glm::mat3 billboard = glm::inverse(camRotation);
+            // Apply the billboard transformation.
+            moonModel *= glm::mat4(billboard);
+            // Scale the quad uniformly (adjust size as needed)
+            moonModel = glm::scale(moonModel, glm::vec3(60.0f));
+            glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(moonModel));
+            glUniform3f(glGetUniformLocation(sunMoonShaderProgram, "color"), 0.8f, 0.8f, 1.0f);
+            glUniform1f(glGetUniformLocation(sunMoonShaderProgram, "brightness"), moonBrightness * 2.0f);
+            glBindVertexArray(sunMoonVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+        }
+
+        glDepthMask(GL_TRUE);
+
+        // --- Set up main scene shader ---
         glUseProgram(shaderProgram);
         glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
         glUniform3fv(glGetUniformLocation(shaderProgram, "lightDir"), 1, glm::value_ptr(sunDir));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "ambientLight"), 1, glm::value_ptr(ambientLight));
-        glUniform3fv(glGetUniformLocation(shaderProgram, "diffuseLight"), 1, glm::value_ptr(diffuseLight));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "ambientLight"), 1, glm::value_ptr(ambientLightMain));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "diffuseLight"), 1, glm::value_ptr(diffuseLightMain));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
@@ -1939,9 +2162,12 @@ int main() {
     glDeleteBuffers(1, &ancientBranchInstanceVBO);
     glDeleteBuffers(1, &minimapVBO);
     glDeleteBuffers(1, &skyboxVBO);
+    glDeleteBuffers(1, &sunMoonVBO);
+    glDeleteVertexArrays(1, &sunMoonVAO);
     glDeleteProgram(shaderProgram);
     glDeleteProgram(minimapShaderProgram);
     glDeleteProgram(skyboxShaderProgram);
+    glDeleteProgram(sunMoonShaderProgram);
     glfwTerminate();
     return 0;
 }
