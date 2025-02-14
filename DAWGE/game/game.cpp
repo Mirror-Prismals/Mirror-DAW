@@ -69,15 +69,6 @@ const float RENDER_DISTANCE = 6.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
-// ---------------------- Forward Declarations ----------------------
-void framebuffer_size_callback(GLFWwindow* window, int width, int height);
-void mouse_callback(GLFWwindow* window, double xposIn, double yposIn);
-void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
-void processInput(GLFWwindow* window);
-glm::ivec3 raycastForBlock(bool place);
-void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO);
-void toggleMapMode(GLFWwindow* window);
-
 // ---------------------- Global Variables ----------------------
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
 glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
@@ -100,6 +91,20 @@ std::unordered_set<ChunkPos> visitedChunks;
 // For the fullscreen map caching.
 bool bigMapDirty = true;
 std::vector<float> bigMapInterleaved;
+
+// *** NEW GLOBALS FOR BIG MAP PANING ***
+// These variables store the center (in world coordinates) of the big map view.
+float bigMapPanX = 0.0f;
+float bigMapPanZ = 0.0f;
+
+// ---------------------- Forward Declarations ----------------------
+void framebuffer_size_callback(GLFWwindow* window, int width, int height);
+void mouse_callback(GLFWwindow* window, double xposIn, double yposIn);
+void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
+void processInput(GLFWwindow* window);
+glm::ivec3 raycastForBlock(bool place);
+void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO);
+void toggleMapMode(GLFWwindow* window);
 
 // ---------------------- Perlin Noise Class ----------------------
 class PerlinNoise {
@@ -174,11 +179,11 @@ TerrainPoint getTerrainHeight(double x, double z) {
         height = elevation * 128.0 + ridge * 96.0;
     }
     // South ocean: chunks with 20 <= cz < 40
-    if (chunkZ >= 130 && chunkZ < 290) {
+    if (chunkZ >= 290 && chunkZ < 1024) {
         return { -4.0, false };
     }
     // North ocean: for the north lake (between -40 and -20)
-    if (chunkZ <= -130 && chunkZ > -190) {
+    if (chunkZ <= -200 && chunkZ > -256) {
         return { -4.0, false };
     }
     return { height, true };
@@ -208,9 +213,9 @@ int getChunkTopBlock(int cx, int cz) {
     if (waterSamples > 0)
         return 1; // water
     // Otherwise decide biome based solely on chunk coordinates.
-    if (cx >= 160)
+    if (cx >= 200)
         return 22; // desert top
-    if (cz <= -130)
+    if (cz <= -256)
         return 23; // north pole top (snow)
     return 0; // otherwise, forest (grass)
 }
@@ -913,8 +918,17 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
 }
 
 void processInput(GLFWwindow* window) {
-    if (fullscreenMap)
-        return; // Disable movement when big map is active.
+    if (fullscreenMap) {
+        // When in big map mode, process arrow keys for panning.
+        const float panSpeed = 500.0f * deltaTime; // Adjust pan speed as desired.
+        bool panned = false;
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) { bigMapPanX -= panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) { bigMapPanX += panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) { bigMapPanZ -= panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) { bigMapPanZ += panSpeed; panned = true; }
+        if (panned) { bigMapDirty = true; }
+        return; // Do not process normal movement when big map is active.
+    }
     const float cameraSpeed = 80.0f * deltaTime;
     if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
         cameraPos += cameraSpeed * cameraFront;
@@ -938,6 +952,11 @@ void toggleMapMode(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS) {
         if (!mWasPressed) {
             fullscreenMap = !fullscreenMap;
+            // Reset panning when entering big map mode (optional)
+            if (fullscreenMap) {
+                bigMapPanX = 0.0f;
+                bigMapPanZ = 0.0f;
+            }
             mWasPressed = true;
         }
     }
@@ -1099,8 +1118,7 @@ float cubeVertices[] = {
 // ---------------------- Minimap Rendering ----------------------
 // This function now performs two modes:
 // (1) Normal minimap mode (small, 96-block region around player) which shows top features (including rivers)
-// and (2) Fullscreen (big) map mode (200x100 chunks centered on spawn) that is cached and overlays unexplored areas.
-// In this version, the big map always shows water (rivers) regardless of exploration.
+// and (2) Fullscreen (big) map mode (an infinite procedural map with panning support).
 void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO) {
     if (!fullscreenMap) {
         // Normal minimap mode (small map)
@@ -1177,14 +1195,20 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
     }
     else {
-        // Fullscreen (big) map mode.
+        // Fullscreen (big) map mode with panning support.
         if (bigMapDirty) {
             bigMapInterleaved.clear();
             std::vector<glm::vec2> vertices;
             std::vector<glm::vec3> colors;
-            // Render region: 200x100 chunks centered on spawn (from -100 to 100 in x and -50 to 50 in z)
-            int startChunkX = -200, endChunkX = 200;
-            int startChunkZ = -200, endChunkZ = 200;
+            // Compute region based on current pan offset.
+            int regionChunks = 400; // Total chunks across one dimension (adjust as needed)
+            int halfRegion = regionChunks / 2;
+            int centerChunkX = static_cast<int>(round(bigMapPanX / CHUNK_SIZE));
+            int centerChunkZ = static_cast<int>(round(bigMapPanZ / CHUNK_SIZE));
+            int startChunkX = centerChunkX - halfRegion;
+            int endChunkX = centerChunkX + halfRegion;
+            int startChunkZ = centerChunkZ - halfRegion;
+            int endChunkZ = centerChunkZ + halfRegion;
             for (int cz = startChunkZ; cz < endChunkZ; cz++) {
                 for (int cx = startChunkX; cx < endChunkX; cx++) {
                     ChunkPos cp(cx, cz);
@@ -1221,7 +1245,7 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                     case 23: col = glm::vec3(0.95f, 0.95f, 1.0f); break;
                     default: col = glm::vec3(1.0f); break;
                     }
-                    // Darken only unvisited non–water chunks.
+                    // Darken only un–visited non–water chunks.
                     if (!visited && blockType != 1)
                         col *= 0.5f;
                     int startX = cx * CHUNK_SIZE;
@@ -1247,11 +1271,13 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
             bigMapDirty = false;
         }
         glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
-        int mapWidth = 400 * CHUNK_SIZE;
-        int mapHeight = 400 * CHUNK_SIZE;
+        int regionChunks = 400;
+        int mapWidth = regionChunks * CHUNK_SIZE;
+        int mapHeight = regionChunks * CHUNK_SIZE;
         float halfW = mapWidth / 2.0f;
         float halfH = mapHeight / 2.0f;
-        glm::mat4 ortho = glm::ortho(-halfW, halfW, halfH, -halfH, -1.0f, 1.0f);
+        // Use the pan offset to center the orthographic projection.
+        glm::mat4 ortho = glm::ortho(bigMapPanX - halfW, bigMapPanX + halfW, bigMapPanZ - halfH, bigMapPanZ + halfH, -1.0f, 1.0f);
         glUseProgram(minimapShaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(minimapShaderProgram, "ortho"), 1, GL_FALSE, glm::value_ptr(ortho));
         glBindBuffer(GL_ARRAY_BUFFER, minimapVBO);
@@ -1264,13 +1290,13 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         glDrawArrays(GL_TRIANGLES, 0, bigMapInterleaved.size() / 5);
         // Render grid on top.
         std::vector<glm::vec2> gridVerts;
-        for (int x = -halfW; x <= halfW; x += CHUNK_SIZE) {
-            gridVerts.push_back(glm::vec2(x, -halfH));
-            gridVerts.push_back(glm::vec2(x, halfH));
+        for (int x = static_cast<int>(bigMapPanX - halfW); x <= static_cast<int>(bigMapPanX + halfW); x += CHUNK_SIZE) {
+            gridVerts.push_back(glm::vec2(x, bigMapPanZ - halfH));
+            gridVerts.push_back(glm::vec2(x, bigMapPanZ + halfH));
         }
-        for (int z = -halfH; z <= halfH; z += CHUNK_SIZE) {
-            gridVerts.push_back(glm::vec2(-halfW, z));
-            gridVerts.push_back(glm::vec2(halfW, z));
+        for (int z = static_cast<int>(bigMapPanZ - halfH); z <= static_cast<int>(bigMapPanZ + halfH); z += CHUNK_SIZE) {
+            gridVerts.push_back(glm::vec2(bigMapPanX - halfW, z));
+            gridVerts.push_back(glm::vec2(bigMapPanX + halfW, z));
         }
         glUniform3f(glGetUniformLocation(minimapShaderProgram, "ourColor"), 0.3f, 0.3f, 0.3f);
         glBufferData(GL_ARRAY_BUFFER, gridVerts.size() * sizeof(glm::vec2), gridVerts.data(), GL_DYNAMIC_DRAW);
