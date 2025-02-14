@@ -1,33 +1,7 @@
 // ======================================================================
 // VoxelGame.cpp
-// A single–file version of a Minecraft–style clone with multiple biomes.
-//
-// Mapping:
-//  0  = Grass,
-//  1  = Water,
-//  2  = Pine/Fir trunk,
-//  3  = Pine leaves,
-//  4  = Origin debug,
-//  5  = Water lily,
-//  6  = Fallen log,
-//  7  = Fir leaves,
-//  8  = Oak trunk,
-//  9  = Oak leaves,
-// 10  = Leaf pile,
-// 11  = Bush (small),
-// 12  = Bush (medium),
-// 13  = Bush (large),
-// 14  = Ground branch,
-// 15  = Dirt,
-// 16  = Ancient trunk,
-// 17  = Ancient leaves,
-// 18  = Ancient branch,
-// 19  = Aurora block,
-// 20  = Deep Stone,
-// 21  = Lava,
-// 22  = Sand,         // Desert top
-// 23  = Snow,         // North pole top
-// 24  = Ice           // North pole ice
+// A single–file version of a Minecraft–style clone with multiple biomes,
+// now with a dynamic skybox whose colors change based on real (Eastern) time.
 // ======================================================================
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -46,7 +20,7 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
-#include <ctime>
+#include <ctime>        // For system time
 
 // ---------------------- ChunkPos Definition and Hash Specialization ----------------------
 struct ChunkPos {
@@ -57,7 +31,7 @@ struct ChunkPos {
 };
 
 namespace std {
-    template<>
+    template <>
     struct hash<ChunkPos> {
         std::size_t operator()(const ChunkPos& cp) const {
             return std::hash<int>()(cp.x) ^ (std::hash<int>()(cp.z) << 1);
@@ -73,78 +47,148 @@ const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
 // ---------------------- Global Variables ----------------------
-
-// We treat cameraPos as the player's feet.
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
-
-// Free–look variables (mouse controls view)
 float cameraYaw = -90.0f;
 float pitch = 0.0f;
-
-// For flight mode, the velocity vector
 glm::vec3 velocity = glm::vec3(0.0f);
-
-// For walking mode, a jump velocity
 float jumpVelocity = 0.0f;
-
-// Toggle between flight (elytra) mode and walking mode.
-// Walking mode is enabled by default.
 bool walkingMode = true;
-
-// In flight mode, pressing SPACE gives a boost.
 const float boostImpulse = 40.0f;
-
-// Constants for flight (elytra) mode
-const float baseAcceleration = 20.0f;    // Acceleration when diving (depends on pitch)
-const float dragFactor = 0.995f;           // Air drag per frame
-const float gravityForce = 9.81f * 0.1f;   // Reduced gravity for flight
-
-// Constants for walking mode
-const float walkSpeed = 10.0f;           // Walking speed in blocks per second
-const float walkGravity = 9.81f;         // Normal gravity for walking
-// Set jump impulse so that maximum jump height is ~1.2 blocks (impulse^2/(2*g) ~ 1.2)
+const float baseAcceleration = 20.0f;
+const float dragFactor = 0.995f;
+const float gravityForce = 9.81f * 0.1f;
+const float walkSpeed = 10.0f;
+const float walkGravity = 9.81f;
 const float walkJumpImpulse = 4.8f;
-
-// Player collision box: 0.6 blocks wide, 2.0 blocks tall.
-// Here cameraPos is the player's feet. (Collision uses these offsets.)
 const glm::vec3 playerBoxOffsetMin = glm::vec3(-0.3f, 0.0f, -0.3f);
 const glm::vec3 playerBoxOffsetMax = glm::vec3(0.3f, 2.0f, 0.3f);
-
-// When rendering, we want the camera at eye-level. Adjust the eye-level offset here.
 const float eyeLevelOffset = 1.6f;
-
-// Mouse state for free–look
 float lastX = WINDOW_WIDTH / 2.0f;
 float lastY = WINDOW_HEIGHT / 2.0f;
 bool firstMouse = true;
-
-// Timing
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
-
-// Fullscreen (big) map mode flag
 bool fullscreenMap = false;
-
-// Set of visited chunks (for the fullscreen map)
 std::unordered_set<ChunkPos> visitedChunks;
-
-// For fullscreen map caching
 bool bigMapDirty = true;
 std::vector<float> bigMapInterleaved;
-
-// Big map panning globals
 float bigMapPanX = 0.0f;
 float bigMapPanZ = 0.0f;
 
-// ---------------------- Forward Declarations ----------------------
+// ---------------------- Skybox Quad Data and Shaders ----------------------
+float skyboxQuadVertices[] = {
+    -1.0f,  1.0f,
+    -1.0f, -1.0f,
+     1.0f, -1.0f,
+    -1.0f,  1.0f,
+     1.0f, -1.0f,
+     1.0f,  1.0f
+};
+
+const char* skyboxVertexShaderSource = R"(
+#version 330 core
+layout(location = 0) in vec2 aPos;
+out vec2 TexCoord;
+void main(){
+    TexCoord = aPos * 0.5 + 0.5;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+}
+)";
+
+const char* skyboxFragmentShaderSource = R"(
+#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+uniform vec3 skyTop;
+uniform vec3 skyBottom;
+void main(){
+    vec3 color = mix(skyBottom, skyTop, TexCoord.y);
+    FragColor = vec4(color, 1.0);
+}
+)";
+
+// ---------------------- Skybox Quad Setup ----------------------
+GLuint skyboxVAO, skyboxVBO;
+void setupSkyboxQuad() {
+    glGenVertexArrays(1, &skyboxVAO);
+    glGenBuffers(1, &skyboxVBO);
+    glBindVertexArray(skyboxVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, skyboxVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(skyboxQuadVertices), skyboxQuadVertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+}
+
+// ---------------------- Utility: Compile Shader Program ----------------------
+GLuint compileShaderProgram(const char* vShaderSrc, const char* fShaderSrc) {
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vShaderSrc, NULL);
+    glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cout << "Vertex Shader Compilation Error:\n" << infoLog << "\n";
+    }
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fShaderSrc, NULL);
+    glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cout << "Fragment Shader Compilation Error:\n" << infoLog << "\n";
+    }
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
+        std::cout << "Shader Program Linking Error:\n" << infoLog << "\n";
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    return program;
+}
+
+// ---------------------- Sky Color Interpolation ----------------------
+struct SkyColorKey {
+    float time;
+    glm::vec3 top;
+    glm::vec3 bottom;
+};
+
+SkyColorKey skyKeys[5] = {
+    { 0.0f, glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f), glm::vec3(0.0f, 0.0f, 0.0f) },
+    { 0.25f, glm::vec3(0.0f, 0.0f, 1.0f), glm::vec3(128 / 255.0f, 128 / 255.0f, 1.0f) },
+    { 0.5f, glm::vec3(135 / 255.0f, 206 / 255.0f, 235 / 255.0f), glm::vec3(254 / 255.0f, 254 / 255.0f, 254 / 255.0f) },
+    { 0.75f, glm::vec3(0.0f, 128 / 255.0f, 128 / 255.0f), glm::vec3(1.0f, 71 / 255.0f, 0.0f) },
+    { 1.0f, glm::vec3(16 / 255.0f, 16 / 255.0f, 48 / 255.0f), glm::vec3(0.0f, 0.0f, 0.0f) }
+};
+
+void getCurrentSkyColors(float dayFraction, glm::vec3& currentTop, glm::vec3& currentBottom) {
+    int lowerIndex = 0, upperIndex = 0;
+    for (int i = 0; i < 4; i++) {
+        if (dayFraction >= skyKeys[i].time && dayFraction <= skyKeys[i + 1].time) {
+            lowerIndex = i;
+            upperIndex = i + 1;
+            break;
+        }
+    }
+    float t = (dayFraction - skyKeys[lowerIndex].time) / (skyKeys[upperIndex].time - skyKeys[lowerIndex].time);
+    currentTop = glm::mix(skyKeys[lowerIndex].top, skyKeys[upperIndex].top, t);
+    currentBottom = glm::mix(skyKeys[lowerIndex].bottom, skyKeys[upperIndex].bottom, t);
+}
+
+// ---------------------- Forward Declarations for Other Functions ----------------------
 void framebuffer_size_callback(GLFWwindow* window, int width, int height);
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn);
 void mouseButtonCallback(GLFWwindow* window, int button, int action, int mods);
 void processInput(GLFWwindow* window);
 glm::ivec3 raycastForBlock(bool place);
-void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO);
-void toggleMapMode(GLFWwindow* window);
-void handleCollision();
 
 // ---------------------- Perlin Noise Class ----------------------
 class PerlinNoise {
@@ -280,7 +324,6 @@ struct Chunk {
     Chunk() : needsMeshUpdate(true) {}
 };
 
-// ---------------------- Global Chunk Storage ----------------------
 std::unordered_map<ChunkPos, Chunk> chunks;
 
 // ---------------------- Quadtree Structures ----------------------
@@ -569,13 +612,9 @@ struct Quadtree {
 };
 
 // ---------------------- Collision Handling ----------------------
-// Use AABB resolution based on player's collision box. The player's box is:
-//    min = cameraPos + (-0.3, 0, -0.3)
-//    max = cameraPos + (0.3, 2.0, 0.3)
 void handleCollision() {
     glm::vec3 playerMin = cameraPos + glm::vec3(-0.3f, 0.0f, -0.3f);
     glm::vec3 playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
-
     int chunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
     int chunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
     for (int cx = chunkX - 1; cx <= chunkX + 1; cx++) {
@@ -612,7 +651,6 @@ void handleCollision() {
                         playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
                     }
                     };
-
                 auto checkBlocks = [&](const std::vector<glm::vec3>& blocks) {
                     for (const auto& pos : blocks) {
                         glm::vec3 blockMin = pos;
@@ -620,7 +658,6 @@ void handleCollision() {
                         resolveAABB(blockMin, blockMax);
                     }
                     };
-
                 checkBlocks(ch.grassPositions);
                 checkBlocks(ch.sandPositions);
                 checkBlocks(ch.snowPositions);
@@ -665,7 +702,6 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     chunk.ancientBranchPositions.clear();
     chunk.auroraPositions.clear();
     chunk.icePositions.clear();
-
     for (int x = 0; x < CHUNK_SIZE; x++) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
@@ -992,12 +1028,6 @@ void updateChunks() {
 }
 
 // ---------------------- Input Handling ----------------------
-// Supports two modes: Flight (elytra) and Walking.
-// Press 'P' to toggle modes. Walking is the default.
-// In Walking mode, WASD moves relative to the horizontal view,
-// SPACE causes a jump with an impulse for ~1.2 block height and normal gravity.
-// In Flight mode, velocity is steered toward the view with reduced gravity and drag.
-// Collision handling is applied in both modes.
 void processInput(GLFWwindow* window) {
     static bool pWasPressed = false;
     if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
@@ -1011,7 +1041,6 @@ void processInput(GLFWwindow* window) {
     else {
         pWasPressed = false;
     }
-
     if (fullscreenMap) {
         const float panSpeed = 500.0f * deltaTime;
         bool panned = false;
@@ -1022,9 +1051,7 @@ void processInput(GLFWwindow* window) {
         if (panned) { bigMapDirty = true; }
         return;
     }
-
     if (!walkingMode) {
-        // Flight mode:
         glm::vec3 viewDir;
         viewDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         viewDir.y = sin(glm::radians(pitch));
@@ -1050,7 +1077,6 @@ void processInput(GLFWwindow* window) {
         }
     }
     else {
-        // Walking mode:
         glm::vec3 forward;
         forward.x = cos(glm::radians(cameraYaw));
         forward.y = 0.0f;
@@ -1081,9 +1107,7 @@ void processInput(GLFWwindow* window) {
         jumpVelocity -= walkGravity * deltaTime;
         cameraPos.y += jumpVelocity * deltaTime;
     }
-
     handleCollision();
-
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
 }
@@ -1126,15 +1150,19 @@ void toggleMapMode(GLFWwindow* window) {
 }
 
 // ---------------------- Shader Sources ----------------------
+
+// --- Vertex Shader with normals and instancing ---
 const char* vertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec2 aTexCoord;
-layout (location = 2) in vec3 aOffset;
-layout (location = 3) in float aRotation;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aTexCoord;
+layout (location = 3) in vec3 aOffset;
+layout (location = 4) in float aRotation;
 out vec2 TexCoord;
 out vec3 ourColor;
 out float instanceDistance;
+out vec3 Normal;
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
@@ -1144,9 +1172,10 @@ uniform vec3 cameraPos;
 uniform float time;
 void main(){
     vec3 pos = aPos;
-    if(blockType != 14 && blockType != 18)
+    vec3 normal = aNormal;
+    if(blockType != 14 && blockType != 18) {
         pos += aOffset;
-    else {
+    } else {
         if(blockType == 14) {
             float angle = aRotation;
             mat3 rot = mat3(
@@ -1158,6 +1187,7 @@ void main(){
                                  0.0, 0.8, 0.0,
                                  0.0, 0.0, 0.3);
             pos = rot * (scaleMat * pos) + aOffset;
+            normal = rot * aNormal;
         } else {
             pos += aOffset;
         }
@@ -1168,7 +1198,7 @@ void main(){
     gl_Position = projection * view * model * vec4(pos, 1.0);
     ourColor = blockColors[blockType];
     TexCoord = aTexCoord;
-    if(blockType != 14 && blockType != 18){
+    if(blockType != 14 && blockType != 18) {
         if(gl_InstanceID > 0)
             instanceDistance = length(aOffset - cameraPos);
         else
@@ -1176,17 +1206,23 @@ void main(){
     } else {
         instanceDistance = length(aOffset - cameraPos);
     }
+    Normal = normalize(mat3(model) * normal);
 }
 )";
 
+// --- Fragment Shader with simple directional lighting ---
 const char* fragmentShaderSource = R"(
 #version 330 core
 in vec2 TexCoord;
 in vec3 ourColor;
 in float instanceDistance;
+in vec3 Normal;
 out vec4 FragColor;
 uniform int blockType;
 uniform vec3 blockColors[25];
+uniform vec3 lightDir;
+uniform vec3 ambientLight;
+uniform vec3 diffuseLight;
 void main(){
     if(blockType == 19){
         FragColor = vec4(ourColor, 0.1);
@@ -1195,18 +1231,24 @@ void main(){
     float gridSize = 24.0;
     float lineWidth = 0.03;
     vec2 f = fract(TexCoord * gridSize);
+    vec3 baseColor;
     if(f.x < lineWidth || f.y < lineWidth)
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        baseColor = vec3(0.0, 0.0, 0.0);
     else {
         float factor = instanceDistance / 100.0;
         vec3 offset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
-        vec3 finalColor = ourColor + offset;
-        finalColor = clamp(finalColor, 0.0, 1.0);
-        FragColor = vec4(finalColor, 1.0);
+        baseColor = ourColor + offset;
+        baseColor = clamp(baseColor, 0.0, 1.0);
     }
+    vec3 norm = normalize(Normal);
+    float diff = max(dot(norm, normalize(lightDir)), 0.0);
+    vec3 lighting = ambientLight + diffuseLight * diff;
+    vec3 finalColor = baseColor * lighting;
+    FragColor = vec4(finalColor, 1.0);
 }
 )";
 
+// --- Minimap Shaders ---
 const char* minimapVertexShaderSource = R"(
 #version 330 core
 layout (location = 0) in vec2 aPos;
@@ -1230,52 +1272,56 @@ void main(){
 
 // ---------------------- Cube Vertex Data ----------------------
 float cubeVertices[] = {
-    // positions          // texture Coords
-    // Front face
-   -0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
-    0.5f, -0.5f,  0.5f,   1.0f, 0.0f,
-    0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
-    0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
-   -0.5f,  0.5f,  0.5f,   0.0f, 1.0f,
-   -0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
-   // Right face
-   0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
-   0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
-   0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
-   0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
-   0.5f,  0.5f,  0.5f,   0.0f, 1.0f,
-   0.5f, -0.5f,  0.5f,   0.0f, 0.0f,
-   // Back face
-   0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
-  -0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
-  -0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
-  -0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
-   0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
-   0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
-   // Left face
-  -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
-  -0.5f, -0.5f,  0.5f,   1.0f, 0.0f,
-  -0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
-  -0.5f,  0.5f,  0.5f,   1.0f, 1.0f,
-  -0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
-  -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
-  // Top face
--0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
- 0.5f,  0.5f,  0.5f,   1.0f, 0.0f,
- 0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
- 0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
--0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
--0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
-// Bottom face
--0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
- 0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
- 0.5f, -0.5f,  0.5f,   1.0f, 1.0f,
- 0.5f, -0.5f,  0.5f,   1.0f, 1.0f,
--0.5f, -0.5f,  0.5f,   0.0f, 1.0f,
--0.5f, -0.5f, -0.5f,   0.0f, 0.0f
+    // Front face (normal 0,0,1)
+   -0.5f, -0.5f,  0.5f,    0,0,1,    0.0f, 0.0f,
+    0.5f, -0.5f,  0.5f,    0,0,1,    1.0f, 0.0f,
+    0.5f,  0.5f,  0.5f,    0,0,1,    1.0f, 1.0f,
+    0.5f,  0.5f,  0.5f,    0,0,1,    1.0f, 1.0f,
+   -0.5f,  0.5f,  0.5f,    0,0,1,    0.0f, 1.0f,
+   -0.5f, -0.5f,  0.5f,    0,0,1,    0.0f, 0.0f,
+
+   // Right face (normal 1,0,0)
+   0.5f, -0.5f,  0.5f,    1,0,0,    0.0f, 0.0f,
+   0.5f, -0.5f, -0.5f,    1,0,0,    1.0f, 0.0f,
+   0.5f,  0.5f, -0.5f,    1,0,0,    1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,    1,0,0,    1.0f, 1.0f,
+   0.5f,  0.5f,  0.5f,    1,0,0,    0.0f, 1.0f,
+   0.5f, -0.5f,  0.5f,    1,0,0,    0.0f, 0.0f,
+
+   // Back face (normal 0,0,-1)
+   0.5f, -0.5f, -0.5f,    0,0,-1,   0.0f, 0.0f,
+  -0.5f, -0.5f, -0.5f,    0,0,-1,   1.0f, 0.0f,
+  -0.5f,  0.5f, -0.5f,    0,0,-1,   1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f,    0,0,-1,   1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,    0,0,-1,   0.0f, 1.0f,
+   0.5f, -0.5f, -0.5f,    0,0,-1,   0.0f, 0.0f,
+
+   // Left face (normal -1,0,0)
+  -0.5f, -0.5f, -0.5f,   -1,0,0,    0.0f, 0.0f,
+  -0.5f, -0.5f,  0.5f,   -1,0,0,    1.0f, 0.0f,
+  -0.5f,  0.5f,  0.5f,   -1,0,0,    1.0f, 1.0f,
+  -0.5f,  0.5f,  0.5f,   -1,0,0,    1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f,   -1,0,0,    0.0f, 1.0f,
+  -0.5f, -0.5f, -0.5f,   -1,0,0,    0.0f, 0.0f,
+
+  // Top face (normal 0,1,0)
+ -0.5f,  0.5f,  0.5f,    0,1,0,    0.0f, 0.0f,
+  0.5f,  0.5f,  0.5f,    0,1,0,    1.0f, 0.0f,
+  0.5f,  0.5f, -0.5f,    0,1,0,    1.0f, 1.0f,
+  0.5f,  0.5f, -0.5f,    0,1,0,    1.0f, 1.0f,
+ -0.5f,  0.5f, -0.5f,    0,1,0,    0.0f, 1.0f,
+ -0.5f,  0.5f,  0.5f,    0,1,0,    0.0f, 0.0f,
+
+ // Bottom face (normal 0,-1,0)
+-0.5f, -0.5f, -0.5f,    0,-1,0,   0.0f, 0.0f,
+ 0.5f, -0.5f, -0.5f,    0,-1,0,   1.0f, 0.0f,
+ 0.5f, -0.5f,  0.5f,    0,-1,0,   1.0f, 1.0f,
+ 0.5f, -0.5f,  0.5f,    0,-1,0,   1.0f, 1.0f,
+-0.5f, -0.5f,  0.5f,    0,-1,0,   0.0f, 1.0f,
+-0.5f, -0.5f, -0.5f,    0,-1,0,   0.0f, 0.0f
 };
 
-// ---------------------- Minimap Rendering ----------------------
+// ---------------------- Minimap Rendering Function ----------------------
 void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO) {
     if (!fullscreenMap) {
         static double lastMapUpdateTime = 0.0;
@@ -1508,95 +1554,17 @@ int main() {
         return -1;
     }
 
-    // ---------------------- Shader Compilation ----------------------
-    unsigned int vertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
-    glCompileShader(vertexShader);
-    {
-        int success;
-        glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
-            std::cout << "Vertex Shader Compilation Error:\n" << infoLog << "\n";
-        }
-    }
-    unsigned int fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
-    glCompileShader(fragmentShader);
-    {
-        int success;
-        glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
-            std::cout << "Fragment Shader Compilation Error:\n" << infoLog << "\n";
-        }
-    }
-    unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    {
-        int success;
-        glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
-            std::cout << "Shader Program Linking Error:\n" << infoLog << "\n";
-        }
-    }
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
+    GLuint shaderProgram = compileShaderProgram(vertexShaderSource, fragmentShaderSource);
+    GLuint minimapShaderProgram = compileShaderProgram(minimapVertexShaderSource, minimapFragmentShaderSource);
+    GLuint skyboxShaderProgram = compileShaderProgram(skyboxVertexShaderSource, skyboxFragmentShaderSource);
+    setupSkyboxQuad();
 
-    // ---------------------- Minimap Shader Compilation ----------------------
-    unsigned int minimapVertexShader = glCreateShader(GL_VERTEX_SHADER);
-    glShaderSource(minimapVertexShader, 1, &minimapVertexShaderSource, NULL);
-    glCompileShader(minimapVertexShader);
-    {
-        int success;
-        glGetShaderiv(minimapVertexShader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetShaderInfoLog(minimapVertexShader, 512, NULL, infoLog);
-            std::cout << "Minimap Vertex Shader Compilation Error:\n" << infoLog << "\n";
-        }
-    }
-    unsigned int minimapFragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-    glShaderSource(minimapFragmentShader, 1, &minimapFragmentShaderSource, NULL);
-    glCompileShader(minimapFragmentShader);
-    {
-        int success;
-        glGetShaderiv(minimapFragmentShader, GL_COMPILE_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetShaderInfoLog(minimapFragmentShader, 512, NULL, infoLog);
-            std::cout << "Minimap Fragment Shader Compilation Error:\n" << infoLog << "\n";
-        }
-    }
-    unsigned int minimapShaderProgram = glCreateProgram();
-    glAttachShader(minimapShaderProgram, minimapVertexShader);
-    glAttachShader(minimapShaderProgram, minimapFragmentShader);
-    glLinkProgram(minimapShaderProgram);
-    {
-        int success;
-        glGetProgramiv(minimapShaderProgram, GL_LINK_STATUS, &success);
-        if (!success) {
-            char infoLog[512];
-            glGetProgramInfoLog(minimapShaderProgram, 512, NULL, infoLog);
-            std::cout << "Minimap Shader Program Linking Error:\n" << infoLog << "\n";
-        }
-    }
-    glDeleteShader(minimapVertexShader);
-    glDeleteShader(minimapFragmentShader);
-
-    // ---------------------- Setup VAOs and VBOs ----------------------
-    unsigned int VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
-    unsigned int oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
-    unsigned int ancientTrunkVAO, ancientLeafVAO;
-    unsigned int branchVAO, ancientBranchVAO;
-    unsigned int dirtVAO, deepStoneVAO, lavaVAO, sandVAO, snowVAO, iceVAO;
-    unsigned int minimapVAO, minimapVBO;
+    GLuint VAO, redVAO, waterVAO, grassVAO, treeTrunkVAO, treeLeafVAO, waterLilyVAO, fallenTreeVAO, firLeafVAO;
+    GLuint oakTrunkVAO, oakLeafVAO, leafPileVAO, bushSmallVAO, bushMediumVAO, bushLargeVAO;
+    GLuint ancientTrunkVAO, ancientLeafVAO;
+    GLuint branchVAO, ancientBranchVAO;
+    GLuint dirtVAO, deepStoneVAO, lavaVAO, sandVAO, snowVAO, iceVAO;
+    GLuint minimapVAO, minimapVBO;
     glGenVertexArrays(1, &VAO);
     glGenVertexArrays(1, &redVAO);
     glGenVertexArrays(1, &waterVAO);
@@ -1624,26 +1592,28 @@ int main() {
     glGenVertexArrays(1, &iceVAO);
     glGenVertexArrays(1, &minimapVAO);
     glGenBuffers(1, &minimapVBO);
-    unsigned int VBO, instanceVBO;
+    GLuint VBO, instanceVBO;
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &instanceVBO);
     GLuint branchInstanceVBO, ancientBranchInstanceVBO;
     glGenBuffers(1, &branchInstanceVBO);
     glGenBuffers(1, &ancientBranchInstanceVBO);
 
-    auto setupVAOFunc = [&](unsigned int vao, bool instanced) {
+    auto setupVAOFunc = [&](GLuint vao, bool instanced) {
         glBindVertexArray(vao);
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
         glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+        glEnableVertexAttribArray(2);
         if (instanced) {
             glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
-            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
-            glEnableVertexAttribArray(2);
-            glVertexAttribDivisor(2, 1);
+            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+            glEnableVertexAttribArray(3);
+            glVertexAttribDivisor(3, 1);
         }
         };
     setupVAOFunc(VAO, false);
@@ -1673,35 +1643,38 @@ int main() {
     glBindVertexArray(branchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, branchInstanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)0);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
-    glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)(sizeof(glm::vec3)));
+    glBindBuffer(GL_ARRAY_BUFFER, branchInstanceVBO);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)0);
     glEnableVertexAttribArray(3);
     glVertexAttribDivisor(3, 1);
+    glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, sizeof(glm::vec4), (void*)(sizeof(glm::vec3)));
+    glEnableVertexAttribArray(4);
+    glVertexAttribDivisor(4, 1);
 
     glBindVertexArray(ancientBranchVAO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
     glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float)));
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
-    glBindBuffer(GL_ARRAY_BUFFER, ancientBranchInstanceVBO);
-    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
     glEnableVertexAttribArray(2);
-    glVertexAttribDivisor(2, 1);
+    glBindBuffer(GL_ARRAY_BUFFER, ancientBranchInstanceVBO);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(3);
+    glVertexAttribDivisor(3, 1);
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // ---------------------- Main Render Loop ----------------------
     while (!glfwWindowShouldClose(window)) {
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
@@ -1711,22 +1684,46 @@ int main() {
         updateChunks();
         glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        glUseProgram(shaderProgram);
-        glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
 
-        // --- Compute view matrix with eye-level offset ---
         glm::vec3 front;
         front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         front.y = sin(glm::radians(pitch));
         front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         front = glm::normalize(front);
-        // Here we add the eye level offset (e.g. 1.6 blocks above cameraPos)
         glm::vec3 eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
         glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
-
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
+
+        time_t currentTime = time(0);
+        tm localTimeInfo;
+        localtime_s(&localTimeInfo, &currentTime);
+        int secondsSinceMidnight = localTimeInfo.tm_hour * 3600 + localTimeInfo.tm_min * 60 + localTimeInfo.tm_sec;
+        float dayFraction = secondsSinceMidnight / 86400.0f;
+        float angle = dayFraction * 2.0f * 3.14159f;
+        glm::vec3 sunDir = glm::normalize(glm::vec3(cos(angle), sin(angle), 0.5f));
+        float brightness = (sin(angle) + 1.0f) / 2.0f;
+        glm::vec3 ambientLight = glm::vec3(0.2f + brightness * 0.3f);
+        glm::vec3 diffuseLight = glm::vec3(0.3f + brightness * 0.7f);
+
+        glm::vec3 skyTop, skyBottom;
+        getCurrentSkyColors(dayFraction, skyTop, skyBottom);
+
+        glDepthMask(GL_FALSE);
+        glUseProgram(skyboxShaderProgram);
+        glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyTop"), 1, glm::value_ptr(skyTop));
+        glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyBottom"), 1, glm::value_ptr(skyBottom));
+        glBindVertexArray(skyboxVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+
+        glUseProgram(shaderProgram);
+        glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
+        glUniform3fv(glGetUniformLocation(shaderProgram, "lightDir"), 1, glm::value_ptr(sunDir));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "ambientLight"), 1, glm::value_ptr(ambientLight));
+        glUniform3fv(glGetUniformLocation(shaderProgram, "diffuseLight"), 1, glm::value_ptr(diffuseLight));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
@@ -1797,7 +1794,6 @@ int main() {
         std::vector<glm::vec3> globalAncientBranchInstances;
         std::vector<glm::vec4> globalBranchInstances;
         std::vector<glm::vec3> globalAuroraInstances;
-
         for (Chunk* chunk : visibleChunks) {
             globalGrassInstances.insert(globalGrassInstances.end(), chunk->grassPositions.begin(), chunk->grassPositions.end());
             globalSandInstances.insert(globalSandInstances.end(), chunk->sandPositions.begin(), chunk->sandPositions.end());
@@ -1824,8 +1820,7 @@ int main() {
             globalBranchInstances.insert(globalBranchInstances.end(), chunk->branchPositions.begin(), chunk->branchPositions.end());
             globalAuroraInstances.insert(globalAuroraInstances.end(), chunk->auroraPositions.begin(), chunk->auroraPositions.end());
         }
-
-        auto drawInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
+        auto drawInstances = [&](GLuint vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
             glm::mat4 model = glm::mat4(1.0f);
@@ -1835,7 +1830,7 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        auto drawBranchInstances = [&](unsigned int vao, unsigned int branchVBO, int blockType, const std::vector<glm::vec4>& instances) {
+        auto drawBranchInstances = [&](GLuint vao, GLuint branchVBO, int blockType, const std::vector<glm::vec4>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
             glm::mat4 model = glm::mat4(1.0f);
@@ -1845,7 +1840,7 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec4), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-        auto drawAncientBranchInstances = [&](unsigned int vao, int blockType, const std::vector<glm::vec3>& instances) {
+        auto drawAncientBranchInstances = [&](GLuint vao, int blockType, const std::vector<glm::vec3>& instances) {
             if (instances.empty()) return;
             glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), blockType);
             glm::mat4 model = glm::mat4(1.0f);
@@ -1855,7 +1850,6 @@ int main() {
             glBufferData(GL_ARRAY_BUFFER, instances.size() * sizeof(glm::vec3), instances.data(), GL_DYNAMIC_DRAW);
             glDrawArraysInstanced(GL_TRIANGLES, 0, 36, static_cast<GLsizei>(instances.size()));
             };
-
         drawInstances(grassVAO, 0, globalGrassInstances);
         drawInstances(sandVAO, 22, globalSandInstances);
         drawInstances(snowVAO, 23, globalSnowInstances);
@@ -1881,7 +1875,6 @@ int main() {
         drawAncientBranchInstances(ancientBranchVAO, 18, globalAncientBranchInstances);
         drawBranchInstances(branchVAO, branchInstanceVBO, 14, globalBranchInstances);
         drawInstances(waterVAO, 19, globalAuroraInstances);
-
         glUniform1i(glGetUniformLocation(shaderProgram, "blockType"), 4);
         {
             glm::mat4 model = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -1889,8 +1882,6 @@ int main() {
             glBindVertexArray(VAO);
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
-
-        // Render player selection outline.
         glm::ivec3 selectedBlock = raycastForBlock(false);
         if (selectedBlock.x != -10000) {
             glm::mat4 outlineModel = glm::translate(glm::mat4(1.0f), glm::vec3(selectedBlock));
@@ -1911,13 +1902,10 @@ int main() {
             blockColors[0] = oldBlockColor0;
             glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 25, glm::value_ptr(blockColors[0]));
         }
-
         renderMinimap(minimapShaderProgram, minimapVAO, minimapVBO);
-
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
-
     glDeleteVertexArrays(1, &VAO);
     glDeleteVertexArrays(1, &redVAO);
     glDeleteVertexArrays(1, &waterVAO);
@@ -1944,13 +1932,16 @@ int main() {
     glDeleteVertexArrays(1, &snowVAO);
     glDeleteVertexArrays(1, &iceVAO);
     glDeleteVertexArrays(1, &minimapVAO);
+    glDeleteVertexArrays(1, &skyboxVAO);
     glDeleteBuffers(1, &VBO);
     glDeleteBuffers(1, &instanceVBO);
     glDeleteBuffers(1, &branchInstanceVBO);
     glDeleteBuffers(1, &ancientBranchInstanceVBO);
     glDeleteBuffers(1, &minimapVBO);
+    glDeleteBuffers(1, &skyboxVBO);
     glDeleteProgram(shaderProgram);
     glDeleteProgram(minimapShaderProgram);
+    glDeleteProgram(skyboxShaderProgram);
     glfwTerminate();
     return 0;
 }
