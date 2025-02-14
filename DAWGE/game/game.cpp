@@ -68,7 +68,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 5.0f;
+const float RENDER_DISTANCE = 4.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
