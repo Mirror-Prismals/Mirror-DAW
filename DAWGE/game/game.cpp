@@ -1,7 +1,7 @@
 // ======================================================================
 // VoxelGame.cpp
 // A single–file version of a Minecraft–style clone with multiple biomes.
-// 
+//
 // Mapping:
 //  0  = Grass,
 //  1  = Water,
@@ -30,11 +30,14 @@
 // 24  = Ice           // North pole ice
 // ======================================================================
 
+#define GLM_ENABLE_EXPERIMENTAL
+
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <glm/gtx/euler_angles.hpp>
 #include <iostream>
 #include <vector>
 #include <unordered_map>
@@ -65,35 +68,71 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1206;
 const unsigned int WINDOW_HEIGHT = 832;
-const float RENDER_DISTANCE = 6.0f;
+const float RENDER_DISTANCE = 5.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 
 // ---------------------- Global Variables ----------------------
-glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
-glm::vec3 cameraFront = glm::vec3(0.0f, 0.0f, -1.0f);
-glm::vec3 cameraUp = glm::vec3(0.0f, 1.0f, 0.0f);
 
-float yaw = -90.0f;
+// We treat cameraPos as the player's feet.
+glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
+
+// Free–look variables (mouse controls view)
+float cameraYaw = -90.0f;
 float pitch = 0.0f;
+
+// For flight mode, the velocity vector
+glm::vec3 velocity = glm::vec3(0.0f);
+
+// For walking mode, a jump velocity
+float jumpVelocity = 0.0f;
+
+// Toggle between flight (elytra) mode and walking mode.
+// Walking mode is enabled by default.
+bool walkingMode = true;
+
+// In flight mode, pressing SPACE gives a boost.
+const float boostImpulse = 40.0f;
+
+// Constants for flight (elytra) mode
+const float baseAcceleration = 20.0f;    // Acceleration when diving (depends on pitch)
+const float dragFactor = 0.995f;           // Air drag per frame
+const float gravityForce = 9.81f * 0.1f;   // Reduced gravity for flight
+
+// Constants for walking mode
+const float walkSpeed = 10.0f;           // Walking speed in blocks per second
+const float walkGravity = 9.81f;         // Normal gravity for walking
+// Set jump impulse so that maximum jump height is ~1.2 blocks (impulse^2/(2*g) ~ 1.2)
+const float walkJumpImpulse = 4.8f;
+
+// Player collision box: 0.6 blocks wide, 2.0 blocks tall.
+// Here cameraPos is the player's feet. (Collision uses these offsets.)
+const glm::vec3 playerBoxOffsetMin = glm::vec3(-0.3f, 0.0f, -0.3f);
+const glm::vec3 playerBoxOffsetMax = glm::vec3(0.3f, 2.0f, 0.3f);
+
+// When rendering, we want the camera at eye-level. Adjust the eye-level offset here.
+const float eyeLevelOffset = 1.6f;
+
+// Mouse state for free–look
 float lastX = WINDOW_WIDTH / 2.0f;
 float lastY = WINDOW_HEIGHT / 2.0f;
 bool firstMouse = true;
+
+// Timing
 float deltaTime = 0.0f;
 float lastFrame = 0.0f;
 
-// Global flag for toggling fullscreen (big) map mode.
+// Fullscreen (big) map mode flag
 bool fullscreenMap = false;
 
-// Global set of visited chunks (for the fullscreen map).
+// Set of visited chunks (for the fullscreen map)
 std::unordered_set<ChunkPos> visitedChunks;
 
-// For the fullscreen map caching.
+// For fullscreen map caching
 bool bigMapDirty = true;
 std::vector<float> bigMapInterleaved;
 
-// *** NEW GLOBALS FOR BIG MAP PANING ***
-// These variables store the center (in world coordinates) of the big map view.
+// Big map panning globals
 float bigMapPanX = 0.0f;
 float bigMapPanZ = 0.0f;
 
@@ -105,6 +144,7 @@ void processInput(GLFWwindow* window);
 glm::ivec3 raycastForBlock(bool place);
 void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO);
 void toggleMapMode(GLFWwindow* window);
+void handleCollision();
 
 // ---------------------- Perlin Noise Class ----------------------
 class PerlinNoise {
@@ -174,28 +214,19 @@ TerrainPoint getTerrainHeight(double x, double z) {
     double height = elevation * 8.0 + ridge * 12.0;
     int chunkX = static_cast<int>(std::floor(x / (double)CHUNK_SIZE));
     int chunkZ = static_cast<int>(std::floor(z / (double)CHUNK_SIZE));
-    // West side mountains boost
-    if (chunkX < -20 && chunkX >= -40) {
+    if (chunkX < -20 && chunkX >= -40)
         height = elevation * 128.0 + ridge * 96.0;
-    }
-    // South ocean: chunks with 20 <= cz < 40
-    if (chunkZ >= 290 && chunkZ < 1024) {
+    if (chunkZ >= 290 && chunkZ < 1024)
         return { -4.0, false };
-    }
-    // North ocean: for the north lake (between -40 and -20)
-    if (chunkZ <= -200 && chunkZ > -256) {
+    if (chunkZ <= -200 && chunkZ > -256)
         return { -4.0, false };
-    }
     return { height, true };
 }
 
-// Modified getChunkTopBlock for big map: sample the center and corners of the chunk
 int getChunkTopBlock(int cx, int cz) {
     double samples[5][2];
-    // Center
     samples[0][0] = cx * CHUNK_SIZE + CHUNK_SIZE / 2.0;
     samples[0][1] = cz * CHUNK_SIZE + CHUNK_SIZE / 2.0;
-    // Four corners
     samples[1][0] = cx * CHUNK_SIZE;
     samples[1][1] = cz * CHUNK_SIZE;
     samples[2][0] = cx * CHUNK_SIZE + CHUNK_SIZE;
@@ -211,41 +242,40 @@ int getChunkTopBlock(int cx, int cz) {
             waterSamples++;
     }
     if (waterSamples > 0)
-        return 1; // water
-    // Otherwise decide biome based solely on chunk coordinates.
+        return 1;
     if (cx >= 200)
-        return 22; // desert top
+        return 22;
     if (cz <= -256)
-        return 23; // north pole top (snow)
-    return 0; // otherwise, forest (grass)
+        return 23;
+    return 0;
 }
 
 // ---------------------- Chunk Structure ----------------------
 struct Chunk {
     std::vector<glm::vec3> waterPositions;
-    std::vector<glm::vec3> grassPositions;     // Grass (block type 0)
-    std::vector<glm::vec3> sandPositions;        // Desert top (block type 22)
-    std::vector<glm::vec3> snowPositions;        // North pole top (block type 23)
-    std::vector<glm::vec3> dirtPositions;        // Dirt (block type 15)
-    std::vector<glm::vec3> deepStonePositions;   // Deep Stone (block type 20)
-    std::vector<glm::vec3> lavaPositions;          // Lava (block type 21)
-    std::vector<glm::vec3> treeTrunkPositions;     // Pine/Fir trunk (block type 2)
-    std::vector<glm::vec3> treeLeafPositions;      // Pine leaves (block type 3)
-    std::vector<glm::vec3> firLeafPositions;       // Fir leaves (block type 7)
-    std::vector<glm::vec3> waterLilyPositions;     // Water lily (block type 5)
-    std::vector<glm::vec3> fallenTreeTrunkPositions; // Fallen log (block type 6)
-    std::vector<glm::vec3> oakTrunkPositions;      // Oak trunk (block type 8)
-    std::vector<glm::vec3> oakLeafPositions;       // Oak leaves (block type 9)
-    std::vector<glm::vec3> leafPilePositions;       // Leaf pile (block type 10)
-    std::vector<glm::vec3> bushSmallPositions;      // Bush small (block type 11)
-    std::vector<glm::vec3> bushMediumPositions;     // Bush medium (block type 12)
-    std::vector<glm::vec3> bushLargePositions;      // Bush large (block type 13)
-    std::vector<glm::vec4> branchPositions;         // Ground branch (block type 14)
-    std::vector<glm::vec3> ancientTrunkPositions;   // Ancient trunk (block type 16)
-    std::vector<glm::vec3> ancientLeafPositions;    // Ancient leaves (block type 17)
-    std::vector<glm::vec3> ancientBranchPositions;  // Ancient branch (block type 18)
-    std::vector<glm::vec3> auroraPositions;         // Aurora block (block type 19)
-    std::vector<glm::vec3> icePositions;            // North pole ice (block type 24)
+    std::vector<glm::vec3> grassPositions;
+    std::vector<glm::vec3> sandPositions;
+    std::vector<glm::vec3> snowPositions;
+    std::vector<glm::vec3> dirtPositions;
+    std::vector<glm::vec3> deepStonePositions;
+    std::vector<glm::vec3> lavaPositions;
+    std::vector<glm::vec3> treeTrunkPositions;
+    std::vector<glm::vec3> treeLeafPositions;
+    std::vector<glm::vec3> firLeafPositions;
+    std::vector<glm::vec3> waterLilyPositions;
+    std::vector<glm::vec3> fallenTreeTrunkPositions;
+    std::vector<glm::vec3> oakTrunkPositions;
+    std::vector<glm::vec3> oakLeafPositions;
+    std::vector<glm::vec3> leafPilePositions;
+    std::vector<glm::vec3> bushSmallPositions;
+    std::vector<glm::vec3> bushMediumPositions;
+    std::vector<glm::vec3> bushLargePositions;
+    std::vector<glm::vec4> branchPositions;
+    std::vector<glm::vec3> ancientTrunkPositions;
+    std::vector<glm::vec3> ancientLeafPositions;
+    std::vector<glm::vec3> ancientBranchPositions;
+    std::vector<glm::vec3> auroraPositions;
+    std::vector<glm::vec3> icePositions;
     bool needsMeshUpdate;
     Chunk() : needsMeshUpdate(true) {}
 };
@@ -258,32 +288,26 @@ struct Plane { glm::vec3 normal; float d; };
 
 std::vector<Plane> extractFrustumPlanes(const glm::mat4& VP) {
     std::vector<Plane> planes(6);
-    // Left
     planes[0].normal.x = VP[0][3] + VP[0][0];
     planes[0].normal.y = VP[1][3] + VP[1][0];
     planes[0].normal.z = VP[2][3] + VP[2][0];
     planes[0].d = VP[3][3] + VP[3][0];
-    // Right
     planes[1].normal.x = VP[0][3] - VP[0][0];
     planes[1].normal.y = VP[1][3] - VP[1][0];
     planes[1].normal.z = VP[2][3] - VP[2][0];
     planes[1].d = VP[3][3] - VP[3][0];
-    // Bottom
     planes[2].normal.x = VP[0][3] + VP[0][1];
     planes[2].normal.y = VP[1][3] + VP[1][1];
     planes[2].normal.z = VP[2][3] + VP[2][1];
     planes[2].d = VP[3][3] + VP[3][1];
-    // Top
     planes[3].normal.x = VP[0][3] - VP[0][1];
     planes[3].normal.y = VP[1][3] - VP[1][1];
     planes[3].normal.z = VP[2][3] - VP[2][1];
     planes[3].d = VP[3][3] - VP[3][1];
-    // Near
     planes[4].normal.x = VP[0][3] + VP[0][2];
     planes[4].normal.y = VP[1][3] + VP[1][2];
     planes[4].normal.z = VP[2][3] + VP[2][2];
     planes[4].d = VP[3][3] + VP[3][2];
-    // Far
     planes[5].normal.x = VP[0][3] - VP[0][2];
     planes[5].normal.y = VP[1][3] - VP[1][2];
     planes[5].normal.z = VP[2][3] - VP[2][2];
@@ -381,11 +405,13 @@ std::vector<glm::vec3> generateOakCanopy(int groundHeight, int trunkHeight, int 
 // ---------------------- Raycasting ----------------------
 glm::ivec3 raycastForBlock(bool place) {
     float t = 0.0f;
-    float stoneTol = 0.5f, trunkTol = 0.5f, leafTol = 0.6f, waterTol = 0.5f;
-    float lilyTol = 0.5f, fallenTol = 0.5f, oakTrunkTol = 0.5f, oakLeafTol = 0.6f;
-    float leafPileTol = 0.5f, bushTol = 0.5f;
     while (t < 5.0f) {
-        glm::vec3 p = cameraPos + t * cameraFront;
+        glm::vec3 front;
+        front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front.y = sin(glm::radians(pitch));
+        front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front = glm::normalize(front);
+        glm::vec3 p = cameraPos + t * front;
         glm::ivec3 candidate = glm::ivec3(std::round(p.x), std::round(p.y), std::round(p.z));
         bool exists = false;
         int chunkX = static_cast<int>(std::floor(candidate.x / static_cast<float>(CHUNK_SIZE)));
@@ -542,11 +568,79 @@ struct Quadtree {
     }
 };
 
+// ---------------------- Collision Handling ----------------------
+// Use AABB resolution based on player's collision box. The player's box is:
+//    min = cameraPos + (-0.3, 0, -0.3)
+//    max = cameraPos + (0.3, 2.0, 0.3)
+void handleCollision() {
+    glm::vec3 playerMin = cameraPos + glm::vec3(-0.3f, 0.0f, -0.3f);
+    glm::vec3 playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
+
+    int chunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
+    int chunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
+    for (int cx = chunkX - 1; cx <= chunkX + 1; cx++) {
+        for (int cz = chunkZ - 1; cz <= chunkZ + 1; cz++) {
+            ChunkPos cp(cx, cz);
+            if (chunks.find(cp) != chunks.end()) {
+                Chunk& ch = chunks[cp];
+                auto resolveAABB = [&](const glm::vec3& boxMin, const glm::vec3& boxMax) {
+                    if (playerMax.x > boxMin.x && playerMin.x < boxMax.x &&
+                        playerMax.y > boxMin.y && playerMin.y < boxMax.y &&
+                        playerMax.z > boxMin.z && playerMin.z < boxMax.z) {
+                        float overlapX = std::min(playerMax.x - boxMin.x, boxMax.x - playerMin.x);
+                        float overlapY = std::min(playerMax.y - boxMin.y, boxMax.y - playerMin.y);
+                        float overlapZ = std::min(playerMax.z - boxMin.z, boxMax.z - playerMin.z);
+                        if (overlapX < overlapY && overlapX < overlapZ) {
+                            if (cameraPos.x < boxMin.x)
+                                cameraPos.x -= overlapX;
+                            else
+                                cameraPos.x += overlapX;
+                        }
+                        else if (overlapY < overlapX && overlapY < overlapZ) {
+                            if (cameraPos.y < boxMin.y)
+                                cameraPos.y -= overlapY;
+                            else
+                                cameraPos.y += overlapY;
+                        }
+                        else {
+                            if (cameraPos.z < boxMin.z)
+                                cameraPos.z -= overlapZ;
+                            else
+                                cameraPos.z += overlapZ;
+                        }
+                        playerMin = cameraPos + glm::vec3(-0.3f, 0.0f, -0.3f);
+                        playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
+                    }
+                    };
+
+                auto checkBlocks = [&](const std::vector<glm::vec3>& blocks) {
+                    for (const auto& pos : blocks) {
+                        glm::vec3 blockMin = pos;
+                        glm::vec3 blockMax = pos + glm::vec3(1.0f);
+                        resolveAABB(blockMin, blockMax);
+                    }
+                    };
+
+                checkBlocks(ch.grassPositions);
+                checkBlocks(ch.sandPositions);
+                checkBlocks(ch.snowPositions);
+                checkBlocks(ch.dirtPositions);
+                checkBlocks(ch.treeTrunkPositions);
+                checkBlocks(ch.oakTrunkPositions);
+                checkBlocks(ch.ancientTrunkPositions);
+            }
+        }
+    }
+    TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+    float terrainY = static_cast<float>(std::floor(tp.height)) + 1.0f;
+    if (cameraPos.y < terrainY)
+        cameraPos.y = terrainY;
+}
+
 // ---------------------- Chunk Mesh Generation ----------------------
 void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     if (!chunk.needsMeshUpdate)
         return;
-    // Clear previous data
     chunk.waterPositions.clear();
     chunk.grassPositions.clear();
     chunk.sandPositions.clear();
@@ -898,6 +992,103 @@ void updateChunks() {
 }
 
 // ---------------------- Input Handling ----------------------
+// Supports two modes: Flight (elytra) and Walking.
+// Press 'P' to toggle modes. Walking is the default.
+// In Walking mode, WASD moves relative to the horizontal view,
+// SPACE causes a jump with an impulse for ~1.2 block height and normal gravity.
+// In Flight mode, velocity is steered toward the view with reduced gravity and drag.
+// Collision handling is applied in both modes.
+void processInput(GLFWwindow* window) {
+    static bool pWasPressed = false;
+    if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
+        if (!pWasPressed) {
+            walkingMode = !walkingMode;
+            pWasPressed = true;
+            velocity = glm::vec3(0.0f);
+            jumpVelocity = 0.0f;
+        }
+    }
+    else {
+        pWasPressed = false;
+    }
+
+    if (fullscreenMap) {
+        const float panSpeed = 500.0f * deltaTime;
+        bool panned = false;
+        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) { bigMapPanX -= panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) { bigMapPanX += panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) { bigMapPanZ -= panSpeed; panned = true; }
+        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) { bigMapPanZ += panSpeed; panned = true; }
+        if (panned) { bigMapDirty = true; }
+        return;
+    }
+
+    if (!walkingMode) {
+        // Flight mode:
+        glm::vec3 viewDir;
+        viewDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        viewDir.y = sin(glm::radians(pitch));
+        viewDir.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        viewDir = glm::normalize(viewDir);
+        float steeringFactor = 0.02f;
+        velocity = glm::mix(velocity, viewDir * glm::length(velocity), steeringFactor);
+        float pitchFactor = -pitch / 90.0f;
+        float accel = baseAcceleration * pitchFactor;
+        velocity += viewDir * accel * deltaTime;
+        velocity.y -= gravityForce * deltaTime;
+        velocity *= dragFactor;
+        cameraPos += velocity * deltaTime;
+        static bool spaceWasPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+            if (!spaceWasPressed) {
+                velocity += viewDir * boostImpulse;
+                spaceWasPressed = true;
+            }
+        }
+        else {
+            spaceWasPressed = false;
+        }
+    }
+    else {
+        // Walking mode:
+        glm::vec3 forward;
+        forward.x = cos(glm::radians(cameraYaw));
+        forward.y = 0.0f;
+        forward.z = sin(glm::radians(cameraYaw));
+        forward = glm::normalize(forward);
+        glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+        glm::vec3 walkDir(0.0f);
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            walkDir += forward;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            walkDir -= forward;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            walkDir -= right;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            walkDir += right;
+        if (glm::length(walkDir) > 0.001f)
+            walkDir = glm::normalize(walkDir);
+        cameraPos += walkDir * walkSpeed * deltaTime;
+        TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+        float groundY = static_cast<float>(std::floor(tp.height)) + 1.0f;
+        bool onGround = (cameraPos.y <= groundY + 0.1f);
+        if (onGround) {
+            jumpVelocity = 0.0f;
+            cameraPos.y = groundY;
+            if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+                jumpVelocity = walkJumpImpulse;
+        }
+        jumpVelocity -= walkGravity * deltaTime;
+        cameraPos.y += jumpVelocity * deltaTime;
+    }
+
+    handleCollision();
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+}
+
+// ---------------------- Mouse Callback ----------------------
 void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
     float xpos = static_cast<float>(xposIn);
     float ypos = static_cast<float>(yposIn);
@@ -906,44 +1097,14 @@ void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
     float yoffset = lastY - ypos;
     lastX = xpos; lastY = ypos;
     const float sensitivity = 0.1f;
-    xoffset *= sensitivity; yoffset *= sensitivity;
-    yaw += xoffset; pitch += yoffset;
-    pitch = std::min(pitch, 89.0f);
-    pitch = std::max(pitch, -89.0f);
-    glm::vec3 front;
-    front.x = std::cos(glm::radians(yaw)) * std::cos(glm::radians(pitch));
-    front.y = std::sin(glm::radians(pitch));
-    front.z = std::sin(glm::radians(yaw)) * std::cos(glm::radians(pitch));
-    cameraFront = glm::normalize(front);
-}
-
-void processInput(GLFWwindow* window) {
-    if (fullscreenMap) {
-        // When in big map mode, process arrow keys for panning.
-        const float panSpeed = 500.0f * deltaTime; // Adjust pan speed as desired.
-        bool panned = false;
-        if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) { bigMapPanX -= panSpeed; panned = true; }
-        if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) { bigMapPanX += panSpeed; panned = true; }
-        if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) { bigMapPanZ -= panSpeed; panned = true; }
-        if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) { bigMapPanZ += panSpeed; panned = true; }
-        if (panned) { bigMapDirty = true; }
-        return; // Do not process normal movement when big map is active.
-    }
-    const float cameraSpeed = 80.0f * deltaTime;
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
-        cameraPos += cameraSpeed * cameraFront;
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
-        cameraPos -= cameraSpeed * cameraFront;
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
-        cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
-        cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraSpeed;
-    if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
-        cameraPos += cameraSpeed * cameraUp;
-    if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)
-        cameraPos -= cameraSpeed * cameraUp;
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(window, true);
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+    cameraYaw += xoffset;
+    pitch += yoffset;
+    if (pitch > 89.0f)
+        pitch = 89.0f;
+    if (pitch < -89.0f)
+        pitch = -89.0f;
 }
 
 // ---------------------- Toggle Map Mode ----------------------
@@ -952,7 +1113,6 @@ void toggleMapMode(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS) {
         if (!mWasPressed) {
             fullscreenMap = !fullscreenMap;
-            // Reset panning when entering big map mode (optional)
             if (fullscreenMap) {
                 bigMapPanX = 0.0f;
                 bigMapPanZ = 0.0f;
@@ -1100,13 +1260,13 @@ float cubeVertices[] = {
   -0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
   -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
   // Top face
- -0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
-  0.5f,  0.5f,  0.5f,   1.0f, 0.0f,
-  0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
-  0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
- -0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
- -0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
- // Bottom face
+-0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
+ 0.5f,  0.5f,  0.5f,   1.0f, 0.0f,
+ 0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
+ 0.5f,  0.5f, -0.5f,   1.0f, 1.0f,
+-0.5f,  0.5f, -0.5f,   0.0f, 1.0f,
+-0.5f,  0.5f,  0.5f,   0.0f, 0.0f,
+// Bottom face
 -0.5f, -0.5f, -0.5f,   0.0f, 0.0f,
  0.5f, -0.5f, -0.5f,   1.0f, 0.0f,
  0.5f, -0.5f,  0.5f,   1.0f, 1.0f,
@@ -1116,12 +1276,8 @@ float cubeVertices[] = {
 };
 
 // ---------------------- Minimap Rendering ----------------------
-// This function now performs two modes:
-// (1) Normal minimap mode (small, 96-block region around player) which shows top features (including rivers)
-// and (2) Fullscreen (big) map mode (an infinite procedural map with panning support).
 void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minimapVBO) {
     if (!fullscreenMap) {
-        // Normal minimap mode (small map)
         static double lastMapUpdateTime = 0.0;
         static std::vector<float> cachedInterleaved;
         double currentTime = glfwGetTime();
@@ -1178,8 +1334,8 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
             }
         }
         glViewport(WINDOW_WIDTH - 200, WINDOW_HEIGHT - 200, 200, 200);
-        glm::mat4 ortho = glm::ortho(cameraPos.x - region, cameraPos.x + region,
-            cameraPos.z - region, cameraPos.z + region,
+        glm::mat4 ortho = glm::ortho((float)(cameraPos.x - region), (float)(cameraPos.x + region),
+            (float)(cameraPos.z - region), (float)(cameraPos.z + region),
             -1.0f, 1.0f);
         glUseProgram(minimapShaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(minimapShaderProgram, "ortho"), 1, GL_FALSE, glm::value_ptr(ortho));
@@ -1191,17 +1347,14 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
         glDrawArrays(GL_TRIANGLES, 0, cachedInterleaved.size() / 5);
-        // (Additional grid and marker rendering for the small map would go here.)
         glViewport(0, 0, WINDOW_WIDTH, WINDOW_HEIGHT);
     }
     else {
-        // Fullscreen (big) map mode with panning support.
         if (bigMapDirty) {
             bigMapInterleaved.clear();
             std::vector<glm::vec2> vertices;
             std::vector<glm::vec3> colors;
-            // Compute region based on current pan offset.
-            int regionChunks = 400; // Total chunks across one dimension (adjust as needed)
+            int regionChunks = 400;
             int halfRegion = regionChunks / 2;
             int centerChunkX = static_cast<int>(round(bigMapPanX / CHUNK_SIZE));
             int centerChunkZ = static_cast<int>(round(bigMapPanZ / CHUNK_SIZE));
@@ -1213,16 +1366,13 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                 for (int cx = startChunkX; cx < endChunkX; cx++) {
                     ChunkPos cp(cx, cz);
                     int blockType;
-                    // If chunk exists, use its data.
                     if (chunks.find(cp) != chunks.end()) {
                         Chunk& ch = chunks[cp];
                         int waterCount = 0;
                         for (const auto& pos : ch.waterPositions) {
-                            // Count water cells on the surface (y near 0)
                             if (std::abs(pos.y - 0.0f) < 0.1f)
                                 waterCount++;
                         }
-                        // Lower threshold to 5 to ensure rivers are shown.
                         if (waterCount > 5)
                             blockType = 1;
                         else if (!ch.sandPositions.empty())
@@ -1235,7 +1385,6 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                     else {
                         blockType = getChunkTopBlock(cx, cz);
                     }
-                    // For big map we want rivers always visible, regardless of visit.
                     bool visited = (visitedChunks.find(cp) != visitedChunks.end());
                     glm::vec3 col;
                     switch (blockType) {
@@ -1245,7 +1394,6 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
                     case 23: col = glm::vec3(0.95f, 0.95f, 1.0f); break;
                     default: col = glm::vec3(1.0f); break;
                     }
-                    // Darken only un–visited non–water chunks.
                     if (!visited && blockType != 1)
                         col *= 0.5f;
                     int startX = cx * CHUNK_SIZE;
@@ -1276,7 +1424,6 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         int mapHeight = regionChunks * CHUNK_SIZE;
         float halfW = mapWidth / 2.0f;
         float halfH = mapHeight / 2.0f;
-        // Use the pan offset to center the orthographic projection.
         glm::mat4 ortho = glm::ortho(bigMapPanX - halfW, bigMapPanX + halfW, bigMapPanZ - halfH, bigMapPanZ + halfH, -1.0f, 1.0f);
         glUseProgram(minimapShaderProgram);
         glUniformMatrix4fv(glGetUniformLocation(minimapShaderProgram, "ortho"), 1, GL_FALSE, glm::value_ptr(ortho));
@@ -1288,7 +1435,6 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(2 * sizeof(float)));
         glEnableVertexAttribArray(1);
         glDrawArrays(GL_TRIANGLES, 0, bigMapInterleaved.size() / 5);
-        // Render grid on top.
         std::vector<glm::vec2> gridVerts;
         for (int x = static_cast<int>(bigMapPanX - halfW); x <= static_cast<int>(bigMapPanX + halfW); x += CHUNK_SIZE) {
             gridVerts.push_back(glm::vec2(x, bigMapPanZ - halfH));
@@ -1303,7 +1449,6 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(glm::vec2), (void*)0);
         glEnableVertexAttribArray(0);
         glDrawArrays(GL_LINES, 0, gridVerts.size());
-        // Render player icon (arrow) and spawn marker.
         std::vector<glm::vec2> arrowVerts = {
             glm::vec2(0.0f, 8.0f),
             glm::vec2(-4.0f, -4.0f),
@@ -1314,7 +1459,7 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
             glm::vec2(4.0f, -4.0f),
             glm::vec2(0.0f, 8.0f)
         };
-        float arrowAngle = glm::radians(-yaw - 90.0f);
+        float arrowAngle = glm::radians(-cameraYaw - 90.0f);
         for (auto& v : arrowVerts) {
             float tx = v.x, ty = v.y;
             v.x = tx * cos(arrowAngle) - ty * sin(arrowAngle);
@@ -1568,7 +1713,17 @@ int main() {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glUseProgram(shaderProgram);
         glUniform1f(glGetUniformLocation(shaderProgram, "time"), currentFrame);
-        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+
+        // --- Compute view matrix with eye-level offset ---
+        glm::vec3 front;
+        front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front.y = sin(glm::radians(pitch));
+        front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front = glm::normalize(front);
+        // Here we add the eye level offset (e.g. 1.6 blocks above cameraPos)
+        glm::vec3 eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
+        glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
+
         glm::mat4 projection = glm::perspective(glm::radians(45.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
@@ -1576,36 +1731,34 @@ int main() {
         glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glUniform3fv(glGetUniformLocation(shaderProgram, "cameraPos"), 1, glm::value_ptr(cameraPos));
 
-        // Define 25 block colors.
         glm::vec3 blockColors[25];
-        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f); // Grass
-        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);     // Water
-        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);   // Pine/Fir trunk
-        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);   // Pine leaves
-        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);      // Origin debug
-        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);      // Water lily
-        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);   // Fallen log
-        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);   // Fir leaves
-        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);   // Oak trunk
-        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);    // Oak leaves
-        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);   // Leaf pile
-        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);   // Bush small
-        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);   // Bush medium
-        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);    // Bush large
-        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);      // Ground branch
-        blockColors[15] = glm::vec3(0.43f, 0.39f, 0.34f);   // Dirt
-        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);     // Ancient trunk
-        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);      // Ancient leaves
-        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);      // Ancient branch
-        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);      // Aurora block
-        blockColors[20] = glm::vec3(0.5f, 0.5f, 0.5f);      // Deep Stone
-        blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);      // Lava
-        blockColors[22] = glm::vec3(0.93f, 0.79f, 0.69f);   // Sand
-        blockColors[23] = glm::vec3(0.95f, 0.95f, 1.0f);    // Snow
-        blockColors[24] = glm::vec3(0.8f, 0.9f, 1.0f);      // Ice
+        blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f);
+        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);
+        blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);
+        blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);
+        blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);
+        blockColors[5] = glm::vec3(0.2f, 0.7f, 0.2f);
+        blockColors[6] = glm::vec3(0.45f, 0.22f, 0.07f);
+        blockColors[7] = glm::vec3(0.13f, 0.54f, 0.13f);
+        blockColors[8] = glm::vec3(0.55f, 0.27f, 0.07f);
+        blockColors[9] = glm::vec3(0.36f, 0.6f, 0.33f);
+        blockColors[10] = glm::vec3(0.44f, 0.39f, 0.32f);
+        blockColors[11] = glm::vec3(0.35f, 0.43f, 0.30f);
+        blockColors[12] = glm::vec3(0.52f, 0.54f, 0.35f);
+        blockColors[13] = glm::vec3(0.6f, 0.61f, 0.35f);
+        blockColors[14] = glm::vec3(0.4f, 0.3f, 0.2f);
+        blockColors[15] = glm::vec3(0.43f, 0.39f, 0.34f);
+        blockColors[16] = glm::vec3(0.4f, 0.25f, 0.1f);
+        blockColors[17] = glm::vec3(0.2f, 0.5f, 0.2f);
+        blockColors[18] = glm::vec3(0.3f, 0.2f, 0.1f);
+        blockColors[19] = glm::vec3(1.0f, 1.0f, 1.0f);
+        blockColors[20] = glm::vec3(0.5f, 0.5f, 0.5f);
+        blockColors[21] = glm::vec3(1.0f, 0.5f, 0.0f);
+        blockColors[22] = glm::vec3(0.93f, 0.79f, 0.69f);
+        blockColors[23] = glm::vec3(0.95f, 0.95f, 1.0f);
+        blockColors[24] = glm::vec3(0.8f, 0.9f, 1.0f);
         glUniform3fv(glGetUniformLocation(shaderProgram, "blockColors"), 25, glm::value_ptr(blockColors[0]));
 
-        // Build quadtree over chunks.
         int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
         int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
         int qtMinX = playerChunkX - static_cast<int>(RENDER_DISTANCE);
@@ -1737,7 +1890,7 @@ int main() {
             glDrawArrays(GL_TRIANGLES, 0, 36);
         }
 
-        // Render the player selection outline.
+        // Render player selection outline.
         glm::ivec3 selectedBlock = raycastForBlock(false);
         if (selectedBlock.x != -10000) {
             glm::mat4 outlineModel = glm::translate(glm::mat4(1.0f), glm::vec3(selectedBlock));
