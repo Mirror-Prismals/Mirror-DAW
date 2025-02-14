@@ -1,8 +1,7 @@
 // ======================================================================
 // VoxelGame.cpp
 // A single–file version of a Minecraft–style clone with multiple biomes,
-// now with a dynamic skybox, sun and moon whose positions and brightness 
-// follow real Eastern time.
+// dynamic skybox, sun/moon and now water/swimming/prone/paraglide mechanics.
 // ======================================================================
 
 #define GLM_ENABLE_EXPERIMENTAL
@@ -46,6 +45,7 @@ const unsigned int WINDOW_HEIGHT = 1080;
 const float RENDER_DISTANCE = 24.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
+const float WATER_SURFACE = 0.0f; // water is drawn at y=0
 
 // ---------------------- Global Variables ----------------------
 
@@ -55,7 +55,10 @@ float cameraYaw = -90.0f;
 float pitch = 0.0f;
 glm::vec3 velocity = glm::vec3(0.0f);
 float jumpVelocity = 0.0f;
-bool walkingMode = true;
+// Instead of walkingMode, we now have playerMode:
+// 0 = Standing (normal walking), 1 = Prone (crawling on land),
+// 2 = Swimming (in water), 3 = Paragliding (in air)
+int playerMode = 0;
 const float boostImpulse = 40.0f;
 const float baseAcceleration = 20.0f;
 const float dragFactor = 0.995f;
@@ -63,9 +66,7 @@ const float gravityForce = 9.81f * 0.1f;
 const float walkSpeed = 10.0f;
 const float walkGravity = 9.81f;
 const float walkJumpImpulse = 4.8f;
-const glm::vec3 playerBoxOffsetMin = glm::vec3(-0.3f, 0.0f, -0.3f);
-const glm::vec3 playerBoxOffsetMax = glm::vec3(0.3f, 2.0f, 0.3f);
-const float eyeLevelOffset = 1.6f;
+float eyeLevelOffset = 1.6f;  // used when in standing/paragliding mode
 float lastX = WINDOW_WIDTH / 2.0f;
 float lastY = WINDOW_HEIGHT / 2.0f;
 bool firstMouse = true;
@@ -78,6 +79,19 @@ std::vector<float> bigMapInterleaved;
 float bigMapPanX = 0.0f;
 float bigMapPanZ = 0.0f;
 bool minimapEnabled = true;
+
+// ---------------------- Utility Functions for Player Bounding Box ----------------------
+glm::vec3 getPlayerBoxMin() {
+    // For all modes, horizontal extents remain the same.
+    return glm::vec3(-0.3f, 0.0f, -0.3f);
+}
+glm::vec3 getPlayerBoxMax() {
+    // Standing and paraglide: 2 blocks tall; prone and swimming: 1 block tall.
+    if (playerMode == 1 || playerMode == 2)
+        return glm::vec3(0.3f, 1.0f, 0.3f);
+    else
+        return glm::vec3(0.3f, 2.0f, 0.3f);
+}
 
 // ---------------------- Skybox Data and Shaders ----------------------
 float skyboxQuadVertices[] = {
@@ -710,8 +724,10 @@ struct Quadtree {
 
 // ---------------------- Collision Handling ----------------------
 void handleCollision() {
-    glm::vec3 playerMin = cameraPos + glm::vec3(-0.3f, 0.0f, -0.3f);
-    glm::vec3 playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
+    // Use mode–dependent bounding box:
+    glm::vec3 playerMin = cameraPos + getPlayerBoxMin();
+    glm::vec3 playerMax = cameraPos + getPlayerBoxMax();
+    TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
     int chunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
     int chunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
     for (int cx = chunkX - 1; cx <= chunkX + 1; cx++) {
@@ -720,6 +736,7 @@ void handleCollision() {
             if (chunks.find(cp) != chunks.end()) {
                 Chunk& ch = chunks[cp];
                 auto resolveAABB = [&](const glm::vec3& boxMin, const glm::vec3& boxMax) {
+                    if (glm::dot(glm::max(playerMin - boxMin, glm::vec3(0.0f)), glm::vec3(1.0f)) > 0) {} // dummy check
                     if (playerMax.x > boxMin.x && playerMin.x < boxMax.x &&
                         playerMax.y > boxMin.y && playerMin.y < boxMax.y &&
                         playerMax.z > boxMin.z && playerMin.z < boxMax.z) {
@@ -744,8 +761,8 @@ void handleCollision() {
                             else
                                 cameraPos.z += overlapZ;
                         }
-                        playerMin = cameraPos + glm::vec3(-0.3f, 0.0f, -0.3f);
-                        playerMax = cameraPos + glm::vec3(0.3f, 2.0f, 0.3f);
+                        playerMin = cameraPos + getPlayerBoxMin();
+                        playerMax = cameraPos + getPlayerBoxMax();
                     }
                     };
                 auto checkBlocks = [&](const std::vector<glm::vec3>& blocks) {
@@ -762,10 +779,12 @@ void handleCollision() {
                 checkBlocks(ch.treeTrunkPositions);
                 checkBlocks(ch.oakTrunkPositions);
                 checkBlocks(ch.ancientTrunkPositions);
+                // For deepStone, only collide if on land
+                if (tp.isLand)
+                    checkBlocks(ch.deepStonePositions);
             }
         }
     }
-    TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
     float terrainY = static_cast<float>(std::floor(tp.height)) + 1.0f;
     if (cameraPos.y < terrainY)
         cameraPos.y = terrainY;
@@ -827,9 +846,6 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                     chunk.waterLilyPositions.push_back(glm::vec3(worldX + dx, 0.2f, worldZ + dz));
                                 }
                             }
-
-
-
                         }
                     }
                 }
@@ -1141,18 +1157,34 @@ void processInput(GLFWwindow* window) {
         nWasPressed = false;
     }
 
+    // Toggle mode (prone / swim / paraglide) with P.
     static bool pWasPressed = false;
     if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
         if (!pWasPressed) {
-            walkingMode = !walkingMode;
+            TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+            float groundY = static_cast<float>(std::floor(tp.height)) + 1.0f;
+            bool onGround = (cameraPos.y <= groundY + 0.1f);
+            bool inWater = (!tp.isLand && cameraPos.y < WATER_SURFACE + 1.0f);
+            bool inAir = !onGround;
+            if (inWater) {
+                // Toggle swimming mode: if not in swimming, switch to it; otherwise revert to standing.
+                playerMode = (playerMode == 2 ? 0 : 2);
+            }
+            else if (inAir) {
+                playerMode = (playerMode == 3 ? 0 : 3);
+            }
+            else {
+                // On land
+                playerMode = (playerMode == 1 ? 0 : 1);
+            }
             pWasPressed = true;
-            velocity = glm::vec3(0.0f);
-            jumpVelocity = 0.0f;
         }
     }
     else {
         pWasPressed = false;
     }
+
+    // If fullscreen map is active, handle panning and return.
     if (fullscreenMap) {
         const float panSpeed = 500.0f * deltaTime;
         bool panned = false;
@@ -1163,32 +1195,11 @@ void processInput(GLFWwindow* window) {
         if (panned) { bigMapDirty = true; }
         return;
     }
-    if (!walkingMode) {
-        glm::vec3 viewDir;
-        viewDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
-        viewDir.y = sin(glm::radians(pitch));
-        viewDir.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
-        viewDir = glm::normalize(viewDir);
-        float steeringFactor = 0.02f;
-        velocity = glm::mix(velocity, viewDir * glm::length(velocity), steeringFactor);
-        float pitchFactor = -pitch / 90.0f;
-        float accel = baseAcceleration * pitchFactor;
-        velocity += viewDir * accel * deltaTime;
-        velocity.y -= gravityForce * deltaTime;
-        velocity *= dragFactor;
-        cameraPos += velocity * deltaTime;
-        static bool spaceWasPressed = false;
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            if (!spaceWasPressed) {
-                velocity += viewDir * boostImpulse;
-                spaceWasPressed = true;
-            }
-        }
-        else {
-            spaceWasPressed = false;
-        }
-    }
-    else {
+
+    // Handle movement based on current playerMode.
+    switch (playerMode) {
+    case 0: // Standing (normal walking)
+    {
         glm::vec3 forward;
         forward.x = cos(glm::radians(cameraYaw));
         forward.y = 0.0f;
@@ -1206,8 +1217,11 @@ void processInput(GLFWwindow* window) {
             walkDir += right;
         if (glm::length(walkDir) > 0.001f)
             walkDir = glm::normalize(walkDir);
-        cameraPos += walkDir * walkSpeed * deltaTime;
+        // If standing in water (but not swimming) slow down movement.
         TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+        float speed = walkSpeed;
+        if (!tp.isLand) speed *= 0.5f;
+        cameraPos += walkDir * speed * deltaTime;
         float groundY = static_cast<float>(std::floor(tp.height)) + 1.0f;
         bool onGround = (cameraPos.y <= groundY + 0.1f);
         if (onGround) {
@@ -1219,6 +1233,94 @@ void processInput(GLFWwindow* window) {
         jumpVelocity -= walkGravity * deltaTime;
         cameraPos.y += jumpVelocity * deltaTime;
     }
+    break;
+    case 1: // Prone (crawling on land)
+    {
+        glm::vec3 forward;
+        forward.x = cos(glm::radians(cameraYaw));
+        forward.y = 0.0f;
+        forward.z = sin(glm::radians(cameraYaw));
+        forward = glm::normalize(forward);
+        glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+        glm::vec3 walkDir(0.0f);
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            walkDir += forward;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            walkDir -= forward;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            walkDir -= right;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            walkDir += right;
+        if (glm::length(walkDir) > 0.001f)
+            walkDir = glm::normalize(walkDir);
+        // Prone speed is slower
+        cameraPos += walkDir * (walkSpeed * 0.5f) * deltaTime;
+        TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+        float groundY = static_cast<float>(std::floor(tp.height)) + 1.0f;
+        if (cameraPos.y < groundY)
+            cameraPos.y = groundY;
+    }
+    break;
+    case 2: // Swimming (in water)
+    {
+        glm::vec3 front;
+        front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front.y = sin(glm::radians(pitch));
+        front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        front = glm::normalize(front);
+        glm::vec3 swimDir(0.0f);
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+            swimDir += front;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+            swimDir -= front;
+        glm::vec3 right = glm::normalize(glm::cross(front, glm::vec3(0.0f, 1.0f, 0.0f)));
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+            swimDir += right;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+            swimDir -= right;
+        // Vertical movement: space to swim up, left control to swim down.
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS)
+            swimDir.y += 1.0f;
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+            swimDir.y -= 1.0f;
+        if (glm::length(swimDir) > 0.001f)
+            swimDir = glm::normalize(swimDir);
+        float swimSpeed = 6.0f;
+        cameraPos += swimDir * swimSpeed * deltaTime;
+        // Simulate mild buoyancy.
+        cameraPos.y += 0.5f * deltaTime;
+    }
+    break;
+    case 3: // Paraglide (in air)
+    {
+        glm::vec3 viewDir;
+        viewDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        viewDir.y = sin(glm::radians(pitch));
+        viewDir.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
+        viewDir = glm::normalize(viewDir);
+        float steeringFactor = 0.02f;
+        velocity = glm::mix(velocity, viewDir * glm::length(velocity), steeringFactor);
+        float pitchFactor = -pitch / 90.0f;
+        float accel = baseAcceleration * pitchFactor;
+        velocity += viewDir * accel * deltaTime;
+        // Reduced gravity for gliding.
+        velocity.y -= (gravityForce * 0.3f) * deltaTime;
+        velocity *= dragFactor;
+        cameraPos += velocity * deltaTime;
+        static bool spaceWasPressed = false;
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+            if (!spaceWasPressed) {
+                velocity += viewDir * boostImpulse;
+                spaceWasPressed = true;
+            }
+        }
+        else {
+            spaceWasPressed = false;
+        }
+    }
+    break;
+    }
+
     handleCollision();
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
         glfwSetWindowShouldClose(window, true);
@@ -1266,17 +1368,17 @@ void toggleMapMode(GLFWwindow* window) {
 // --- Main Scene Vertex Shader (with normals, texcoords, instancing) ---
 const char* vertexShaderSource = R"(
 #version 330 core
-layout (location = 0) in vec3 aPos;
-layout (location = 1) in vec3 aNormal;
-layout (location = 2) in vec2 aTexCoord;
-layout (location = 3) in vec3 aOffset;
-layout (location = 4) in float aRotation;
+layout (location = 0) in vec3 aPos;       // Vertex position
+layout (location = 1) in vec3 aNormal;      // Vertex normal
+layout (location = 2) in vec2 aTexCoord;    // Texture coordinate
+layout (location = 3) in vec3 aOffset;      // Instance offset (constant per instance)
+layout (location = 4) in float aRotation;   // Instance rotation
 
 out vec2 TexCoord;
 out vec3 ourColor;
 out float instanceDistance;
 out vec3 Normal;
-out vec3 WorldPos;  // World-space position output
+out vec3 WorldPos;  // World-space position
 
 uniform mat4 model;
 uniform mat4 view;
@@ -1287,33 +1389,50 @@ uniform vec3 cameraPos;
 uniform float time;
 
 void main(){
-    vec3 pos = aPos;
+    vec3 pos;
     vec3 normal = aNormal;
     
-    // For blocks that are not type 14 or 18
+    // For blocks that are not type 14 or 18:
     if(blockType != 14 && blockType != 18) {
-        // WATER BLOCK: apply a churning, randomized displacement.
+        // WATER BLOCK (blockType == 1): Scale up and juggle uniformly.
         if(blockType == 1){
-            vec3 waveDisplacement;
-            // Mix components to avoid a simple directional bias.
-            waveDisplacement.x = sin(time * 0.5 + aOffset.x * 1.3 + aOffset.y * 0.7) * 0.3;
-            waveDisplacement.y = sin(time * 0.5 + aOffset.y * 1.3 + aOffset.z * 0.7) * 0.2;
-            waveDisplacement.z = sin(time * 0.5 + aOffset.z * 1.3 + aOffset.x * 0.7) * 0.3;
-            pos += aOffset + waveDisplacement;
+            float scaleFactor = 1.2; // Increase water block size
+            // Scale the base vertex positions.
+            vec3 scaledPos = aPos * scaleFactor;
+            // Compute a uniform displacement for the whole instance.
+            vec3 waterDisplacement;
+            waterDisplacement.x = sin(time * 0.5 + aOffset.x * 1.3 + aOffset.y * 0.7) * 0.2;
+            waterDisplacement.y = sin(time * 0.5 + aOffset.y * 1.3 + aOffset.z * 0.7) * 0.2;
+            waterDisplacement.z = sin(time * 0.5 + aOffset.z * 1.3 + aOffset.x * 0.7) * 0.2;
+            // Add scaled position, instance offset, and uniform displacement.
+            pos = scaledPos + aOffset + waterDisplacement;
         }
-        // LEAF BLOCKS: apply a subtle rustle effect (adjust block type numbers as needed).
+        // WATER LILY (blockType == 5): Scale up and juggle uniformly.
+        else if(blockType == 5) {
+            float scaleFactor = 1.2; // Increase water lily size
+            // If your water lily model is already centered, scale it.
+            vec3 scaledPos = aPos * scaleFactor;
+            // Compute a uniform displacement.
+            vec3 lilyDisplacement;
+            lilyDisplacement.x = sin(time * 0.5 + aOffset.x) * 0.1;
+            lilyDisplacement.y = sin(time * 0.5 + aOffset.y) * 0.1;
+            lilyDisplacement.z = sin(time * 0.5 + aOffset.z) * 0.1;
+            pos = scaledPos + aOffset + lilyDisplacement;
+        }
+        // LEAF BLOCKS: Apply a uniform displacement.
         else if(blockType == 3 || blockType == 7 || blockType == 9 || blockType == 17){
             vec3 leafDisplacement;
             leafDisplacement.x = sin((aOffset.x + time) * 0.3) * 0.05;
             leafDisplacement.y = cos((aOffset.y + time) * 0.3) * 0.05;
             leafDisplacement.z = sin((aOffset.z + time) * 0.3) * 0.05;
-            pos += aOffset + leafDisplacement;
+            pos = aPos + aOffset + leafDisplacement;
         }
-        // All other blocks: simply add the base offset.
+        // All other blocks: simply add the instance offset.
         else {
-            pos += aOffset;
+            pos = aPos + aOffset;
         }
-    } else {
+    } 
+    else {
         // Special handling for block types 14 and 18 (rotate/scaled models)
         if(blockType == 14) {
             float angle = aRotation;
@@ -1325,19 +1444,20 @@ void main(){
             mat3 scaleMat = mat3(0.3, 0.0, 0.0,
                                  0.0, 0.8, 0.0,
                                  0.0, 0.0, 0.3);
-            pos = rot * (scaleMat * pos) + aOffset;
+            pos = rot * (scaleMat * aPos) + aOffset;
             normal = rot * aNormal;
-        } else {
-            pos += aOffset;
+        } 
+        else {
+            pos = aPos + aOffset;
         }
     }
     
-    // Additional adjustment for blockType 19
+    // Additional adjustment for blockType 19 (if needed)
     if(blockType == 19){
         pos.y += sin(time + aOffset.x * 0.1) * 0.5;
     }
     
-    // Compute world-space position after all displacement.
+    // Compute world-space position.
     vec4 worldPos4 = model * vec4(pos, 1.0);
     WorldPos = worldPos4.xyz;
     
@@ -1345,6 +1465,7 @@ void main(){
     ourColor = blockColors[blockType];
     TexCoord = aTexCoord;
     
+    // Compute instance distance for effects.
     if(blockType != 14 && blockType != 18) {
         if(gl_InstanceID > 0)
             instanceDistance = length(aOffset - cameraPos);
@@ -1356,7 +1477,6 @@ void main(){
     
     Normal = normalize(mat3(model) * normal);
 }
-
 )";
 // --- Main Scene Fragment Shader ---
 const char* fragmentShaderSource = R"(
@@ -1402,7 +1522,7 @@ void main(){
         vec3 lighting = ambientLight + diffuseLight * diff;
         vec3 finalColor = waterColor * lighting;
         
-        // Set water to be translucent (alpha = 0.6)
+        // Set water to be translucent (alpha = 0.3)
         FragColor = vec4(finalColor, 0.3);
     }
     else {
@@ -1426,13 +1546,10 @@ void main(){
         vec3 lighting = ambientLight + diffuseLight * diff;
         vec3 finalColor = baseColor * lighting;
         
-        // Fully opaque for non-water blocks.
         FragColor = vec4(finalColor, 1.0);
     }
 }
 )";
-
-
 
 // --- Minimap Vertex Shader ---
 const char* minimapVertexShaderSource = R"(
@@ -1886,20 +2003,24 @@ int main() {
         front.y = sin(glm::radians(pitch));
         front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         front = glm::normalize(front);
-        glm::vec3 eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
+        // Set eye position based on mode: lower if prone or swimming.
+        glm::vec3 eyePos;
+        if (playerMode == 1 || playerMode == 2)
+            eyePos = cameraPos + glm::vec3(0.0f, 0.5f, 0.0f);
+        else
+            eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
         glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
         glm::mat4 projection = glm::perspective(glm::radians(103.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
 
         // Get Eastern local time.
-        time_t currentTime = time(0);
+        time_t currentTimeT = time(0);
         tm localTimeInfo;
-        localtime_s(&localTimeInfo, &currentTime);
+        localtime_s(&localTimeInfo, &currentTimeT);
         int secondsSinceMidnight = localTimeInfo.tm_hour * 3600 + localTimeInfo.tm_min * 60 + localTimeInfo.tm_sec;
         float dayFraction = secondsSinceMidnight / 86400.0f;
         float angle = dayFraction * 2.0f * 3.14159f;
-        // Compute the full hour as a float.
         float rawHour = localTimeInfo.tm_hour + localTimeInfo.tm_min / 60.0f + localTimeInfo.tm_sec / 3600.0f;
         float hour = fmod(rawHour, 24.0f);
 
@@ -1907,44 +2028,35 @@ int main() {
         float brightnessMain = 0.0f;
 
         if (hour >= 6.0f && hour < 18.0f) {
-            // Daytime: Sun rises at 6:00 (east), is overhead at 12:00, and sets at 18:00 (west)
-            float u = (hour - 6.0f) / 12.0f; // u in [0,1]
+            float u = (hour - 6.0f) / 12.0f;
             sunDir = glm::vec3(cos(u * 3.14159f), sin(u * 3.14159f), 0.0f);
             moonDir = -sunDir;
-            // Use a sine curve so brightness is 0 at sunrise/sunset and peaks at noon.
             brightnessMain = sin(u * 3.14159f);
         }
         else {
-            // Nighttime: For times before 6:00, add 24 to wrap properly.
             float adjustedHour = (hour < 6.0f) ? hour + 24.0f : hour;
-            float u = (adjustedHour - 18.0f) / 12.0f; // u in [0,1] from 18:00 to 6:00
+            float u = (adjustedHour - 18.0f) / 12.0f;
             moonDir = glm::vec3(cos(u * 3.14159f), sin(u * 3.14159f), 0.0f);
             sunDir = -moonDir;
-            brightnessMain = 0.0f; // No sun brightness at night
+            brightnessMain = 0.0f;
         }
 
-        // Define ambient and diffuse light for the main scene.
         glm::vec3 ambientLightMain = glm::vec3(0.2f + brightnessMain * 0.3f);
         glm::vec3 diffuseLightMain = glm::vec3(0.3f + brightnessMain * 0.7f);
 
-        // Compute world positions for the sun and moon (placed far away).
         glm::vec3 sunWorldPos = cameraPos + sunDir * 1000.0f;
         glm::vec3 moonWorldPos = cameraPos + moonDir * 1000.0f;
 
-        // Determine skybox colors.
         glm::vec3 skyTop, skyBottom;
         getCurrentSkyColors(dayFraction, skyTop, skyBottom);
-        // Derive an offset from your camera's yaw and pitch.
-        // This offset will make the star field rotate with the camera so the stars appear fixed in the sky.
-        float offsetX = cameraYaw / 360.0f;  // Normalize yaw to a 0-1 range.
-        float offsetY = pitch / 180.0f;      // Use pitch if available; otherwise, set to 0.
+        float offsetX = cameraYaw / 360.0f;
+        float offsetY = pitch / 180.0f;
         glUniform2f(glGetUniformLocation(skyboxShaderProgram, "starOffset"), offsetX, offsetY);
 
         // --- Draw Skybox ---
         glDepthMask(GL_FALSE);
         glUseProgram(skyboxShaderProgram);
         glUniform1f(glGetUniformLocation(skyboxShaderProgram, "time"), currentFrame);
-        // Do not override starOffset here—use the value computed above.
         glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyTop"), 1, glm::value_ptr(skyTop));
         glUniform3fv(glGetUniformLocation(skyboxShaderProgram, "skyBottom"), 1, glm::value_ptr(skyBottom));
         glBindVertexArray(skyboxVAO);
@@ -1953,27 +2065,24 @@ int main() {
         glDepthMask(GL_TRUE);
 
         // --- Compute Sun and Moon positions based on real time ---
-
         glm::vec3 sunDirBillboard(0.0f), moonDirBillboard(0.0f);
         float sunBrightness = 0.0f, moonBrightness = 0.0f;
-        // Sun visible from 6:00 to 18:00.
         if (hour >= 6.0f && hour < 18.0f) {
-            float u = (hour - 6.0f) / 12.0f; // 0 to 1
-            float elev = sin(u * 3.14159f);   // 0 at sunrise, 1 at noon, 0 at sunset.
-            float azimuth = glm::radians(90.0f + u * 180.0f); // from 90 (east) to 270 (west)
+            float u = (hour - 6.0f) / 12.0f;
+            float elev = sin(u * 3.14159f);
+            float azimuth = glm::radians(90.0f + u * 180.0f);
             sunDirBillboard.x = cos(glm::radians(elev * 90.0f)) * sin(azimuth);
             sunDirBillboard.y = elev;
             sunDirBillboard.z = cos(glm::radians(elev * 90.0f)) * cos(azimuth);
-            sunBrightness = elev; // simple brightness
+            sunBrightness = elev;
             moonBrightness = 0.0f;
         }
         else {
-            // Moon visible outside 6:00-18:00.
             float v = 0.0f;
             if (hour < 6.0f)
-                v = hour / 6.0f; // 0 to 1 from midnight to 6am.
+                v = hour / 6.0f;
             else
-                v = (hour - 18.0f) / 6.0f; // 0 to 1 from 18:00 to midnight.
+                v = (hour - 18.0f) / 6.0f;
             float elev = sin(v * 3.14159f);
             float azimuth = glm::radians(90.0f + v * 180.0f);
             moonDirBillboard.x = cos(glm::radians(elev * 90.0f)) * sin(azimuth);
@@ -1986,34 +2095,25 @@ int main() {
         // --- Render Sun/Moon ---
         glDepthMask(GL_FALSE);
         glUseProgram(sunMoonShaderProgram);
-        // Set common uniforms for sun/moon shader.
         glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
         glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-        // Render sun if brightness > 0
         if (sunBrightness > 0.01f) {
-            // Compute billboard matrix so the quad always faces the camera.
             glm::mat4 model = glm::translate(glm::mat4(1.0f), sunWorldPos);
             glm::mat3 camRotation = glm::mat3(view);
             glm::mat3 billboard = glm::inverse(camRotation);
             model *= glm::mat4(billboard);
-            model = glm::scale(model, glm::vec3(50.0f)); // Adjust sun size here.
+            model = glm::scale(model, glm::vec3(50.0f));
             glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(model));
-            glUniform3f(glGetUniformLocation(sunMoonShaderProgram, "color"), 1.0f, 1.0f, 0.0f); // sun is yellowish.
+            glUniform3f(glGetUniformLocation(sunMoonShaderProgram, "color"), 1.0f, 1.0f, 0.0f);
             glUniform1f(glGetUniformLocation(sunMoonShaderProgram, "brightness"), sunBrightness);
             glBindVertexArray(sunMoonVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
-        // Render moon with proper billboarding
         if (moonBrightness > 0.01f) {
-            // Create model matrix for the moon that always faces the camera.
             glm::mat4 moonModel = glm::translate(glm::mat4(1.0f), moonWorldPos);
-            // Extract only the rotation from the view matrix.
             glm::mat3 camRotation = glm::mat3(view);
-            // Invert the camera rotation to cancel it out.
             glm::mat3 billboard = glm::inverse(camRotation);
-            // Apply the billboard transformation.
             moonModel *= glm::mat4(billboard);
-            // Scale the quad uniformly (adjust size as needed)
             moonModel = glm::scale(moonModel, glm::vec3(60.0f));
             glUniformMatrix4fv(glGetUniformLocation(sunMoonShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(moonModel));
             glUniform3f(glGetUniformLocation(sunMoonShaderProgram, "color"), 0.8f, 0.8f, 1.0f);
@@ -2021,7 +2121,6 @@ int main() {
             glBindVertexArray(sunMoonVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
         }
-
         glDepthMask(GL_TRUE);
 
         // --- Set up main scene shader ---
