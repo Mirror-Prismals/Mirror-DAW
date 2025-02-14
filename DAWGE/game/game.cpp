@@ -41,8 +41,8 @@ namespace std {
 }
 
 // ---------------------- Global Constants ----------------------
-const unsigned int WINDOW_WIDTH = 1206;
-const unsigned int WINDOW_HEIGHT = 832;
+const unsigned int WINDOW_WIDTH = 1920;
+const unsigned int WINDOW_HEIGHT = 1080;
 const float RENDER_DISTANCE = 24.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
@@ -819,11 +819,17 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     if (canPlaceLily) {
                         int hashVal = std::abs((static_cast<int>(worldX) * 91321) ^ (static_cast<int>(worldZ) * 7817));
                         if (hashVal % 100 < 1) {
-                            for (int dx = -7; dx < 7; dx++) {
-                                for (int dz = -7; dz < 7; dz++) {
+                            for (int dx = -6; dx < 6; dx++) {
+                                for (int dz = -6; dz < 6; dz++) {
+                                    // Skip the 3-block corners
+                                    if ((dx <= -5 || dx >= 4) && (dz <= -5 || dz >= 4))
+                                        continue;
                                     chunk.waterLilyPositions.push_back(glm::vec3(worldX + dx, 0.2f, worldZ + dz));
                                 }
                             }
+
+
+
                         }
                     }
                 }
@@ -1265,10 +1271,13 @@ layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
 layout (location = 3) in vec3 aOffset;
 layout (location = 4) in float aRotation;
+
 out vec2 TexCoord;
 out vec3 ourColor;
 out float instanceDistance;
 out vec3 Normal;
+out vec3 WorldPos;  // World-space position output
+
 uniform mat4 model;
 uniform mat4 view;
 uniform mat4 projection;
@@ -1276,12 +1285,36 @@ uniform int blockType;
 uniform vec3 blockColors[25];
 uniform vec3 cameraPos;
 uniform float time;
+
 void main(){
     vec3 pos = aPos;
     vec3 normal = aNormal;
+    
+    // For blocks that are not type 14 or 18
     if(blockType != 14 && blockType != 18) {
-        pos += aOffset;
+        // WATER BLOCK: apply a churning, randomized displacement.
+        if(blockType == 1){
+            vec3 waveDisplacement;
+            // Mix components to avoid a simple directional bias.
+            waveDisplacement.x = sin(time * 0.5 + aOffset.x * 1.3 + aOffset.y * 0.7) * 0.3;
+            waveDisplacement.y = sin(time * 0.5 + aOffset.y * 1.3 + aOffset.z * 0.7) * 0.2;
+            waveDisplacement.z = sin(time * 0.5 + aOffset.z * 1.3 + aOffset.x * 0.7) * 0.3;
+            pos += aOffset + waveDisplacement;
+        }
+        // LEAF BLOCKS: apply a subtle rustle effect (adjust block type numbers as needed).
+        else if(blockType == 3 || blockType == 7 || blockType == 9 || blockType == 17){
+            vec3 leafDisplacement;
+            leafDisplacement.x = sin((aOffset.x + time) * 0.3) * 0.05;
+            leafDisplacement.y = cos((aOffset.y + time) * 0.3) * 0.05;
+            leafDisplacement.z = sin((aOffset.z + time) * 0.3) * 0.05;
+            pos += aOffset + leafDisplacement;
+        }
+        // All other blocks: simply add the base offset.
+        else {
+            pos += aOffset;
+        }
     } else {
+        // Special handling for block types 14 and 18 (rotate/scaled models)
         if(blockType == 14) {
             float angle = aRotation;
             mat3 rot = mat3(
@@ -1298,12 +1331,20 @@ void main(){
             pos += aOffset;
         }
     }
+    
+    // Additional adjustment for blockType 19
     if(blockType == 19){
         pos.y += sin(time + aOffset.x * 0.1) * 0.5;
     }
-    gl_Position = projection * view * model * vec4(pos, 1.0);
+    
+    // Compute world-space position after all displacement.
+    vec4 worldPos4 = model * vec4(pos, 1.0);
+    WorldPos = worldPos4.xyz;
+    
+    gl_Position = projection * view * worldPos4;
     ourColor = blockColors[blockType];
     TexCoord = aTexCoord;
+    
     if(blockType != 14 && blockType != 18) {
         if(gl_InstanceID > 0)
             instanceDistance = length(aOffset - cameraPos);
@@ -1312,10 +1353,11 @@ void main(){
     } else {
         instanceDistance = length(aOffset - cameraPos);
     }
+    
     Normal = normalize(mat3(model) * normal);
 }
-)";
 
+)";
 // --- Main Scene Fragment Shader ---
 const char* fragmentShaderSource = R"(
 #version 330 core
@@ -1323,36 +1365,74 @@ in vec2 TexCoord;
 in vec3 ourColor;
 in float instanceDistance;
 in vec3 Normal;
+in vec3 WorldPos;  // World-space position passed from the vertex shader
+
 out vec4 FragColor;
+
 uniform int blockType;
 uniform vec3 blockColors[25];
 uniform vec3 lightDir;
 uniform vec3 ambientLight;
 uniform vec3 diffuseLight;
+uniform float time;
+
 void main(){
     if(blockType == 19){
         FragColor = vec4(ourColor, 0.1);
         return;
     }
-    float gridSize = 24.0;
-    float lineWidth = 0.03;
-    vec2 f = fract(TexCoord * gridSize);
-    vec3 baseColor;
-    if(f.x < lineWidth || f.y < lineWidth)
-        baseColor = vec3(0.0, 0.0, 0.0);
-    else {
-        float factor = instanceDistance / 100.0;
-        vec3 offset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
-        baseColor = ourColor + offset;
-        baseColor = clamp(baseColor, 0.0, 1.0);
+    
+    // WATER RENDERING: seamless water with a wave effect
+    if(blockType == 1){
+        // Use the base water color from blockColors[1]
+        vec3 waterColor = blockColors[1];
+        
+        // Compute a wave effect using world coordinates and time.
+        // Adjust the frequency and speed as desired.
+        float wave1 = sin(WorldPos.x * 0.1 + time * 2.0);
+        float wave2 = cos(WorldPos.z * 0.1 + time * 2.0);
+        float wave = (wave1 + wave2) * 0.5; // Combined wave value in [-1,1]
+        
+        // Modulate the water color slightly based on the wave
+        waterColor *= (1.0 + wave * 0.1);
+        
+        // Compute simple diffuse lighting
+        vec3 norm = normalize(Normal);
+        float diff = max(dot(norm, normalize(lightDir)), 0.0);
+        vec3 lighting = ambientLight + diffuseLight * diff;
+        vec3 finalColor = waterColor * lighting;
+        
+        // Set water to be translucent (alpha = 0.6)
+        FragColor = vec4(finalColor, 0.3);
     }
-    vec3 norm = normalize(Normal);
-    float diff = max(dot(norm, normalize(lightDir)), 0.0);
-    vec3 lighting = ambientLight + diffuseLight * diff;
-    vec3 finalColor = baseColor * lighting;
-    FragColor = vec4(finalColor, 1.0);
+    else {
+        // NON-WATER RENDERING: apply grid overlay effect for other blocks
+        float gridSize = 24.0;
+        float lineWidth = 0.03;
+        vec2 f = fract(TexCoord * gridSize);
+        vec3 baseColor;
+        
+        if(f.x < lineWidth || f.y < lineWidth)
+            baseColor = vec3(0.0, 0.0, 0.0);
+        else {
+            float factor = instanceDistance / 100.0;
+            vec3 offset = vec3(0.03 * factor, 0.03 * factor, 0.05 * factor);
+            baseColor = ourColor + offset;
+            baseColor = clamp(baseColor, 0.0, 1.0);
+        }
+        
+        vec3 norm = normalize(Normal);
+        float diff = max(dot(norm, normalize(lightDir)), 0.0);
+        vec3 lighting = ambientLight + diffuseLight * diff;
+        vec3 finalColor = baseColor * lighting;
+        
+        // Fully opaque for non-water blocks.
+        FragColor = vec4(finalColor, 1.0);
+    }
 }
 )";
+
+
 
 // --- Minimap Vertex Shader ---
 const char* minimapVertexShaderSource = R"(
@@ -1646,7 +1726,10 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Minecraft Clone", nullptr, nullptr);
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Minecraft Clone", primaryMonitor, nullptr);
+
     if (!window) {
         std::cout << "Failed to create GLFW window\n";
         glfwTerminate();
@@ -1805,7 +1888,7 @@ int main() {
         front = glm::normalize(front);
         glm::vec3 eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
         glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::mat4 projection = glm::perspective(glm::radians(45.0f),
+        glm::mat4 projection = glm::perspective(glm::radians(103.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
 
@@ -1953,7 +2036,7 @@ int main() {
 
         glm::vec3 blockColors[25];
         blockColors[0] = glm::vec3(0.19f, 0.66f, 0.32f);
-        blockColors[1] = glm::vec3(0.0f, 0.5f, 0.5f);
+        blockColors[1] = glm::vec3(0.0f, 0.5f, 1.0f);
         blockColors[2] = glm::vec3(0.29f, 0.21f, 0.13f);
         blockColors[3] = glm::vec3(0.07f, 0.46f, 0.34f);
         blockColors[4] = glm::vec3(1.0f, 0.0f, 0.0f);
