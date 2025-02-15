@@ -42,7 +42,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1920;
 const unsigned int WINDOW_HEIGHT = 1080;
-const float RENDER_DISTANCE = 19.0f;
+const float RENDER_DISTANCE = 10.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 const float WATER_SURFACE = 0.0f; // water is drawn at y=0
@@ -1328,6 +1328,7 @@ void processInput(GLFWwindow* window) {
 
     // Handle movement based on current playerMode.
     switch (playerMode) {
+ 
     case 0: // Standing/Walking
     {
         // -----------------------------------------------
@@ -1335,7 +1336,7 @@ void processInput(GLFWwindow* window) {
         // -----------------------------------------------
         glm::vec3 forward = glm::vec3(cos(glm::radians(cameraYaw)), 0.0f, sin(glm::radians(cameraYaw)));
         glm::vec3 right = glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f));
-        glm::vec3 walkDir = glm::vec3(0.0f);
+        glm::vec3 walkDir(0.0f);
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
             walkDir += forward;
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -1356,7 +1357,7 @@ void processInput(GLFWwindow* window) {
         if (sprintActive)
             currentSpeed *= 2.0f;
 
-        // The "desired" horizontal velocity is walkDir * currentSpeed.
+        // Desired horizontal velocity.
         glm::vec3 desiredHorizVel = walkDir * currentSpeed;
 
         // -----------------------------------------------
@@ -1364,30 +1365,83 @@ void processInput(GLFWwindow* window) {
         // -----------------------------------------------
         glm::vec3 oldVel = velocity;
         glm::vec3 newVel = oldVel;
-        float blendFactor = 10.0f * deltaTime;  // Adjust blend factor as needed.
-        glm::vec3 oldHoriz = glm::vec3(oldVel.x, 0.0f, oldVel.z);
+        float blendFactor = 10.0f * deltaTime; // Adjust as needed.
+        glm::vec3 oldHoriz(oldVel.x, 0.0f, oldVel.z);
         glm::vec3 nextHoriz = glm::mix(oldHoriz, desiredHorizVel, blendFactor);
         newVel.x = nextHoriz.x;
         newVel.z = nextHoriz.z;
         velocity = newVel;
 
         // -----------------------------------------------
-        // 3) Handle Jump Input (Allow jump on ground or in water)
+        // 3) Handle Jump Input and Double-Jump Mantle
         // -----------------------------------------------
-        static bool spaceWasPressed = false;
+        // Check if we're on the ground.
+        TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+        float groundY = floor(tp.height) + 1.0f;
+        bool onGround = (cameraPos.y <= groundY + 0.1f);
+        bool inWater = (!tp.isLand && cameraPos.y <= WATER_SURFACE + 0.1f);
+
+        // Static state flags.
+        static bool hasJumped = false;    // Set true after a normal jump.
+        static bool mantleUsed = false;   // Prevents multiple mantles per airborne state.
+        static bool spaceWasPressed = false; // Edge detector.
+        static float lastMantleTime = 0.0f;  // Cooldown timer.
+        float currentTime = static_cast<float>(glfwGetTime());
+        const float mantleCooldown = 0.5f; // Cooldown in seconds.
+
+        // Reset jump state on landing.
+        if (onGround) {
+            hasJumped = false;
+            mantleUsed = false;
+        }
+
         if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
             if (!spaceWasPressed) {
-                TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
-                float groundY = floor(tp.height) + 1.0f;
-                bool onGround = (cameraPos.y <= groundY + 0.1f);
-                // Check if in water: not land and near the water surface.
-                bool inWater = (!tp.isLand && cameraPos.y <= WATER_SURFACE + 0.1f);
                 if (onGround || inWater) {
-                    if (inWater) {
-                        velocity.y = waterJumpImpulse; // water jump impulse (6.0f)
-                    }
-                    else {
-                        velocity.y = walkJumpImpulse; // normal jump impulse (4.8f)
+                    // Normal jump.
+                    if (inWater)
+                        velocity.y = waterJumpImpulse; // e.g. 6.0f
+                    else
+                        velocity.y = walkJumpImpulse;  // e.g. 4.8f
+                    hasJumped = true;
+                }
+                else if (hasJumped && !mantleUsed && (currentTime - lastMantleTime >= mantleCooldown)) {
+                    // Only attempt mantle if already jumped and falling slowly.
+                    // Require that you're falling but not too fast.
+                    if (velocity.y < -0.1f && velocity.y > -5.0f) {
+                        // Use your raycast function to check for a candidate ledge.
+                        glm::ivec3 candidate = raycastForBlock(false);
+                        if (candidate.x != -10000) {
+                            // Assume blocks are 1 unit tall.
+                            float blockTop = candidate.y + 1.0f;
+                            // Vertical thresholds.
+                            const float mantleMinOffset = 0.2f;
+                            const float mantleMaxOffset = 1.5f;
+                            if (blockTop > cameraPos.y + mantleMinOffset && blockTop <= cameraPos.y + mantleMaxOffset) {
+                                // Compute candidate block's center.
+                                glm::vec3 candidateCenter = glm::vec3(candidate) + glm::vec3(0.5f);
+                                // Horizontal distance.
+                                float horizDist = glm::length(glm::vec2(candidateCenter.x - cameraPos.x,
+                                    candidateCenter.z - cameraPos.z));
+                                // Ensure candidate is in front: dot product between (candidateCenter - cameraPos) and forward.
+                                float forwardDot = glm::dot(glm::normalize(candidateCenter - cameraPos), forward);
+                                // Define thresholds:
+                                const float minMantleHorizDistance = 0.5f;  // must not be too close (to avoid wall collisions)
+                                const float maxMantleHorizDistance = 1.0f;  // candidate should be reasonably in front.
+                                if (horizDist >= minMantleHorizDistance &&
+                                    horizDist <= maxMantleHorizDistance &&
+                                    forwardDot > 0.7f) // candidate is mostly in front
+                                {
+                                    // Apply mantle impulse.
+                                    const float mantleUpImpulse = 6.0f;      // upward boost (tweak as needed)
+                                    const float mantleForwardImpulse = 4.0f; // forward boost (tweak as needed)
+                                    velocity.y = mantleUpImpulse;
+                                    velocity += forward * mantleForwardImpulse;
+                                    mantleUsed = true;
+                                    lastMantleTime = currentTime;
+                                }
+                            }
+                        }
                     }
                 }
                 spaceWasPressed = true;
@@ -1403,24 +1457,20 @@ void processInput(GLFWwindow* window) {
         velocity.y -= walkGravity * deltaTime;
 
         // -----------------------------------------------
-        // 5) Separate Horizontal and Vertical Position Updates
+        // 5) Update Position Separately (Horizontal & Vertical)
         // -----------------------------------------------
-        // Update horizontal (X/Z) movement:
+        // Horizontal update (X/Z):
         glm::vec3 horizVel(velocity.x, 0.0f, velocity.z);
         glm::vec3 newPosHoriz = cameraPos + horizVel * deltaTime;
         cameraPos.x = newPosHoriz.x;
         cameraPos.z = newPosHoriz.z;
-
-        // Update vertical (Y) movement:
+        // Vertical update (Y):
         glm::vec3 vertVel(0.0f, velocity.y, 0.0f);
         glm::vec3 newPosVert = cameraPos + vertVel * deltaTime;
         cameraPos.y = newPosVert.y;
 
         break;
     }
-
-
-
 
 
 
