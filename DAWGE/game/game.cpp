@@ -42,7 +42,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1920;
 const unsigned int WINDOW_HEIGHT = 1080;
-const float RENDER_DISTANCE = 9.0f;
+const float RENDER_DISTANCE = 19.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 const float WATER_SURFACE = 0.0f; // water is drawn at y=0
@@ -821,7 +821,6 @@ void handleCollision() {
     if (!tp.isLand && cameraPos.y < -1.0f)
         cameraPos.y = -1.0f;
 }
-
 // ---------------------- Chunk Mesh Generation ----------------------
 void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     if (!chunk.needsMeshUpdate)
@@ -925,22 +924,49 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                 if (terrain.height > 2.0) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
+                    // Parameters for pine trees
+                    int trunkHeight = 60, trunkThickness = 4;
+                    int extraBottom = 15;  // extra trunk blocks below ground (only for the trunk)
+                    int extraHeight = 30;  // extra trunk blocks on top (if desired)
                     // ----- Pine Tree Branch for far chunks -----
                     if (currentChunkZ <= -40) {
                         int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
+                        // For pine trees, we want the canopy to remain at groundHeight + trunkHeight.
+                        // So we add trunk blocks from groundHeight + 1 up to groundHeight + trunkHeight
+                        // and then add extra trunk blocks below ground (without affecting canopy).
                         glm::vec3 pineBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                         if (hashValPine % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, pineBase)) {
-                            int trunkHeight = 60, trunkThickness = 4;
-                            int extraHeight = 30; // extra blocks on top of the original trunk
-                            for (int i = 1; i <= trunkHeight + extraHeight; i++) {
+                            // Draw main trunk (above ground)
+                            for (int i = 1; i <= trunkHeight; i++) {
                                 for (int tx = 0; tx < trunkThickness; tx++) {
                                     for (int tz = 0; tz < trunkThickness; tz++) {
-                                        // Notice we always add trunk blocks relative to worldX+tx, groundHeight+i, worldZ+tz
-                                        chunk.treeTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
+                                        chunk.treeTrunkPositions.push_back(
+                                            glm::vec3(worldX + tx, groundHeight + i, worldZ + tz)
+                                        );
                                     }
                                 }
                             }
-                            // Generate canopy at the original trunk height
+                            // Draw extra trunk blocks below ground
+                            for (int i = 0; i < extraBottom; i++) {
+                                for (int tx = 0; tx < trunkThickness; tx++) {
+                                    for (int tz = 0; tz < trunkThickness; tz++) {
+                                        chunk.treeTrunkPositions.push_back(
+                                            glm::vec3(worldX + tx, groundHeight - i, worldZ + tz)
+                                        );
+                                    }
+                                }
+                            }
+                            // Optionally, if you still want extra height on top, you could add:
+                            for (int i = trunkHeight + 1; i <= trunkHeight + extraHeight; i++) {
+                                for (int tx = 0; tx < trunkThickness; tx++) {
+                                    for (int tz = 0; tz < trunkThickness; tz++) {
+                                        chunk.treeTrunkPositions.push_back(
+                                            glm::vec3(worldX + tx, groundHeight + i, worldZ + tz)
+                                        );
+                                    }
+                                }
+                            }
+                            // Generate canopy at the original trunk height (unchanged)
                             std::vector<glm::vec3> pineCanopy = generatePineCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                             chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                         }
@@ -951,12 +977,33 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
                             glm::vec3 pineBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValPine % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, pineBase)) {
-                                int trunkHeight = 60, trunkThickness = 4;
-                                int extraHeight = 30; // extra trunk blocks at the top
-                                for (int i = 1; i <= trunkHeight + extraHeight; i++) {
+                                // Draw main trunk above ground
+                                for (int i = 1; i <= trunkHeight; i++) {
                                     for (int tx = 0; tx < trunkThickness; tx++) {
                                         for (int tz = 0; tz < trunkThickness; tz++) {
-                                            chunk.treeTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
+                                            chunk.treeTrunkPositions.push_back(
+                                                glm::vec3(worldX + tx, groundHeight + i, worldZ + tz)
+                                            );
+                                        }
+                                    }
+                                }
+                                // Extra blocks below ground
+                                for (int i = 0; i < extraBottom; i++) {
+                                    for (int tx = 0; tx < trunkThickness; tx++) {
+                                        for (int tz = 0; tz < trunkThickness; tz++) {
+                                            chunk.treeTrunkPositions.push_back(
+                                                glm::vec3(worldX + tx, groundHeight - i, worldZ + tz)
+                                            );
+                                        }
+                                    }
+                                }
+                                // Optional: extra blocks on top (if desired)
+                                for (int i = trunkHeight + 1; i <= trunkHeight + extraHeight; i++) {
+                                    for (int tx = 0; tx < trunkThickness; tx++) {
+                                        for (int tz = 0; tz < trunkThickness; tz++) {
+                                            chunk.treeTrunkPositions.push_back(
+                                                glm::vec3(worldX + tx, groundHeight + i, worldZ + tz)
+                                            );
                                         }
                                     }
                                 }
@@ -967,52 +1014,52 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                             int hashValFir = std::abs((intWorldX * 83492791) ^ (intWorldZ * 19349663));
                             glm::vec3 firBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValFir % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, firBase)) {
-                                int trunkHeight = 40, trunkThickness = 3;
-                                for (int i = 1; i <= trunkHeight; i++) {
-                                    for (int tx = 0; tx < trunkThickness; tx++) {
-                                        for (int tz = 0; tz < trunkThickness; tz++) {
+                                int trunkHeightFir = 40, trunkThicknessFir = 3;
+                                for (int i = 1; i <= trunkHeightFir; i++) {
+                                    for (int tx = 0; tx < trunkThicknessFir; tx++) {
+                                        for (int tz = 0; tz < trunkThicknessFir; tz++) {
                                             chunk.treeTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
                                         }
                                     }
                                 }
-                                std::vector<glm::vec3> firCanopy = generateFirCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
+                                std::vector<glm::vec3> firCanopy = generateFirCanopy(groundHeight, trunkHeightFir, trunkThicknessFir, worldX, worldZ);
                                 chunk.firLeafPositions.insert(chunk.firLeafPositions.end(), firCanopy.begin(), firCanopy.end());
                             }
                         } {
                             int hashValOak = std::abs((intWorldX * 92821) ^ (intWorldZ * 123457));
                             glm::vec3 oakBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValOak % 1000 < 1 && !treeCollision(chunk.oakTrunkPositions, oakBase)) {
-                                int trunkHeight = 7, trunkThickness = 2;
-                                for (int i = 1; i <= trunkHeight; i++) {
-                                    for (int tx = 0; tx < trunkThickness; tx++) {
-                                        for (int tz = 0; tz < trunkThickness; tz++) {
+                                int trunkHeightOak = 7, trunkThicknessOak = 2;
+                                for (int i = 1; i <= trunkHeightOak; i++) {
+                                    for (int tx = 0; tx < trunkThicknessOak; tx++) {
+                                        for (int tz = 0; tz < trunkThicknessOak; tz++) {
                                             chunk.oakTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
                                         }
                                     }
                                 }
-                                std::vector<glm::vec3> oakCanopy = generateOakCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
+                                std::vector<glm::vec3> oakCanopy = generateOakCanopy(groundHeight, trunkHeightOak, trunkThicknessOak, worldX, worldZ);
                                 chunk.oakLeafPositions.insert(chunk.oakLeafPositions.end(), oakCanopy.begin(), oakCanopy.end());
                             }
                         } {
                             int hashValAncient = std::abs((intWorldX * 112233) ^ (intWorldZ * 445566));
                             glm::vec3 ancientBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValAncient % 3000 < 1 && !treeCollision(chunk.ancientTrunkPositions, ancientBase)) {
-                                int trunkHeight = 30, trunkThickness = 3;
-                                for (int i = 1; i <= trunkHeight; i++) {
-                                    for (int tx = 0; tx < trunkThickness; tx++) {
-                                        for (int tz = 0; tz < trunkThickness; tz++) {
+                                int trunkHeightAncient = 30, trunkThicknessAncient = 3;
+                                for (int i = 1; i <= trunkHeightAncient; i++) {
+                                    for (int tx = 0; tx < trunkThicknessAncient; tx++) {
+                                        for (int tz = 0; tz < trunkThicknessAncient; tz++) {
                                             chunk.ancientTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
                                         }
                                     }
                                 }
-                                int centerY = groundHeight + trunkHeight;
+                                int centerY = groundHeight + trunkHeightAncient;
                                 float canopyRadius = 5.0f;
                                 for (int dy = -static_cast<int>(canopyRadius); dy <= static_cast<int>(canopyRadius); dy++) {
                                     for (int dx = -static_cast<int>(canopyRadius); dx <= static_cast<int>(canopyRadius); dx++) {
                                         for (int dz = -static_cast<int>(canopyRadius); dz <= static_cast<int>(canopyRadius); dz++) {
                                             float dist = std::sqrt(dx * dx + dy * dy + dz * dz);
                                             if (dist < canopyRadius)
-                                                chunk.ancientLeafPositions.push_back(glm::vec3(worldX + trunkThickness / 2.0f + dx, centerY + dy, worldZ + trunkThickness / 2.0f + dz));
+                                                chunk.ancientLeafPositions.push_back(glm::vec3(worldX + trunkThicknessAncient / 2.0f + dx, centerY + dy, worldZ + trunkThicknessAncient / 2.0f + dz));
                                         }
                                     }
                                 }
@@ -1021,7 +1068,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                     int randomOffset = (rand() % 3) - 1;
                                     int branchStart = branchBaseHeights[b] + randomOffset;
                                     float branchRot = (b * 90.0f) * (3.14159f / 180.0f);
-                                    glm::vec3 branchStartPos = glm::vec3(worldX + trunkThickness / 2.0f, groundHeight + branchStart, worldZ + trunkThickness / 2.0f);
+                                    glm::vec3 branchStartPos = glm::vec3(worldX + trunkThicknessAncient / 2.0f, groundHeight + branchStart, worldZ + trunkThicknessAncient / 2.0f);
                                     int branchLength = 10 + (rand() % 3);
                                     for (int i = 1; i <= branchLength; i++) {
                                         float bx = cos(branchRot) * i;
