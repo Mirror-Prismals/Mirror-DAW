@@ -504,23 +504,29 @@ bool treeCollision(const std::vector<glm::vec3>& trunkArray, const glm::vec3& ba
 }
 
 // ---------------------- Tree Generation Functions ----------------------
-std::vector<glm::vec3> generatePineCanopy(int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ) {
+// ---------------------- Pine Tree Generation Functions ----------------------
+
+// --- Pine Canopy Generation Function ---
+// Uses an "effective" trunk height (base trunk + extra trunk logs) to position the canopy.
+std::vector<glm::vec3> generatePineCanopy(int groundHeight, int effectiveTrunkHeight, int trunkThickness, double worldX, double worldZ) {
     std::vector<glm::vec3> leafPositions;
-    int canopyOffset = 50;
-    int canopyLayers = 80;
-    int canopyBase = groundHeight + trunkHeight - canopyOffset;
-    float bottomRadius = 8.0f;
-    float topRadius = 2.0f;
-    float ringThickness = 1.0f;
-    float centerOffset = (trunkThickness - 1) / 2.0f;
+    int canopyOffset = 70;       // How far below the effective trunk top the canopy starts
+    int canopyLayers = 80;       // Number of canopy layers
+    int canopyBase = groundHeight + effectiveTrunkHeight - canopyOffset;
+    float bottomRadius = 8.0f;     // Radius at the bottom of the canopy
+    float topRadius = 2.0f;     // Radius at the top of the canopy
+    float centerOffset = (trunkThickness - 1) / 2.0f;  // Centers the canopy relative to the trunk
+
     for (int layer = 0; layer < canopyLayers; layer++) {
+        // Linearly interpolate the radius from bottomRadius to topRadius.
         float currentRadius = bottomRadius - layer * ((bottomRadius - topRadius) / (canopyLayers - 1));
         int yPos = canopyBase + layer;
         int range = static_cast<int>(std::ceil(currentRadius));
         for (int dx = -range; dx <= range; dx++) {
             for (int dz = -range; dz <= range; dz++) {
                 float dist = std::sqrt(dx * dx + dz * dz);
-                if (std::abs(dist - currentRadius) < ringThickness) {
+                // Fill the entire circle for this layer.
+                if (dist <= currentRadius) {
                     leafPositions.push_back(glm::vec3(worldX + centerOffset + dx, yPos, worldZ + centerOffset + dz));
                 }
             }
@@ -528,6 +534,38 @@ std::vector<glm::vec3> generatePineCanopy(int groundHeight, int trunkHeight, int
     }
     return leafPositions;
 }
+
+// --- Pine Tree Generation Function (Trunk + Extra Logs + Canopy) ---
+// "trunkHeight" is the base trunk height, and "extraTrunkLogs" is how many extra trunk blocks to add on top.
+void generatePineTree(Chunk& chunk, int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ, int extraTrunkLogs) {
+    // --- Generate Main Trunk Logs (base trunk) ---
+    for (int i = 1; i <= trunkHeight; i++) {
+        for (int tx = 0; tx < trunkThickness; tx++) {
+            for (int tz = 0; tz < trunkThickness; tz++) {
+                glm::vec3 pos(worldX + tx, groundHeight + i, worldZ + tz);
+                chunk.treeTrunkPositions.push_back(pos);
+            }
+        }
+    }
+
+    // --- Generate Extra Trunk Logs (to extend the trunk upward) ---
+    for (int i = trunkHeight + 1; i <= trunkHeight + extraTrunkLogs; i++) {
+        for (int tx = 0; tx < trunkThickness; tx++) {
+            for (int tz = 0; tz < trunkThickness; tz++) {
+                glm::vec3 pos(worldX + tx, groundHeight + i, worldZ + tz);
+                chunk.treeTrunkPositions.push_back(pos);
+            }
+        }
+    }
+
+    // --- Generate Canopy Using the Effective Trunk Height ---
+    int effectiveTrunkHeight = trunkHeight + extraTrunkLogs;
+    std::vector<glm::vec3> canopy = generatePineCanopy(groundHeight, effectiveTrunkHeight, trunkThickness, worldX, worldZ);
+    chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), canopy.begin(), canopy.end());
+}
+
+
+
 
 std::vector<glm::vec3> generateFirCanopy(int groundHeight, int trunkHeight, int trunkThickness, double worldX, double worldZ) {
     std::vector<glm::vec3> leafPositions;
@@ -925,9 +963,9 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
                     // Parameters for pine trees
-                    int trunkHeight = 60, trunkThickness = 4;
+                    int trunkHeight = 80, trunkThickness = 4;
                     int extraBottom = 15;  // extra trunk blocks below ground (only for the trunk)
-                    int extraHeight = 30;  // extra trunk blocks on top (if desired)
+                    int extraHeight = 90;  // extra trunk blocks on top (if desired)
                     // ----- Pine Tree Branch for far chunks -----
                     if (currentChunkZ <= -40) {
                         int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
@@ -997,16 +1035,20 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                                         }
                                     }
                                 }
-                                // Optional: extra blocks on top (if desired)
-                                for (int i = trunkHeight + 1; i <= trunkHeight + extraHeight; i++) {
+                                // Original (only converting the very top block):
+                                for (int i = 1; i <= trunkHeight; i++) {
                                     for (int tx = 0; tx < trunkThickness; tx++) {
                                         for (int tz = 0; tz < trunkThickness; tz++) {
-                                            chunk.treeTrunkPositions.push_back(
-                                                glm::vec3(worldX + tx, groundHeight + i, worldZ + tz)
-                                            );
+                                            glm::vec3 pos = glm::vec3(worldX + tx, groundHeight + i, worldZ + tz);
+                                            // If this is one of the top 8 blocks, turn it into a leaf block.
+                                            if (i > trunkHeight - 1)
+                                                chunk.treeLeafPositions.push_back(pos);
+                                            else
+                                                chunk.treeTrunkPositions.push_back(pos);
                                         }
                                     }
                                 }
+
                                 std::vector<glm::vec3> pineCanopy = generatePineCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                                 chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                             }
