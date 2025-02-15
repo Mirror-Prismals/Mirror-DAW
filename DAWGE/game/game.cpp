@@ -732,8 +732,11 @@ struct Quadtree {
 
 // ---------------------- Collision Handling ----------------------
 void handleCollision() {
+    // Get the player's current AABB.
     glm::vec3 playerMin = cameraPos + getPlayerBoxMin();
     glm::vec3 playerMax = cameraPos + getPlayerBoxMax();
+
+    // For each nearby chunk:
     int chunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
     int chunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
     for (int cx = chunkX - 1; cx <= chunkX + 1; cx++) {
@@ -741,35 +744,56 @@ void handleCollision() {
             ChunkPos cp(cx, cz);
             if (chunks.find(cp) != chunks.end()) {
                 Chunk& ch = chunks[cp];
+
                 auto resolveAABB = [&](const glm::vec3& boxMin, const glm::vec3& boxMax) {
+                    // Check if overlapping
                     if (playerMax.x > boxMin.x && playerMin.x < boxMax.x &&
                         playerMax.y > boxMin.y && playerMin.y < boxMax.y &&
                         playerMax.z > boxMin.z && playerMin.z < boxMax.z) {
-                        float overlapX = std::min(playerMax.x - boxMin.x, boxMax.x - playerMin.x);
-                        float overlapY = std::min(playerMax.y - boxMin.y, boxMax.y - playerMin.y);
-                        float overlapZ = std::min(playerMax.z - boxMin.z, boxMax.z - playerMin.z);
-                        if (overlapX < overlapY && overlapX < overlapZ) {
+
+                        // Calculate penetration depth along each axis
+                        float penX = std::min(playerMax.x - boxMin.x, boxMax.x - playerMin.x);
+                        float penY = std::min(playerMax.y - boxMin.y, boxMax.y - playerMin.y);
+                        float penZ = std::min(playerMax.z - boxMin.z, boxMax.z - playerMin.z);
+
+                        // Only resolve if penetration is significant
+                        const float threshold = 0.01f;
+                        if (penX < threshold && penY < threshold && penZ < threshold)
+                            return;
+
+                        // Resolve along the axis with the smallest penetration.
+                        if (penX <= penY && penX <= penZ)
+                        {
                             if (cameraPos.x < boxMin.x)
-                                cameraPos.x -= overlapX;
+                                cameraPos.x -= penX;
                             else
-                                cameraPos.x += overlapX;
+                                cameraPos.x += penX;
                         }
-                        else if (overlapY < overlapX && overlapY < overlapZ) {
+                        else if (penY <= penX && penY <= penZ)
+                        {
                             if (cameraPos.y < boxMin.y)
-                                cameraPos.y -= overlapY;
+                                cameraPos.y -= penY;
                             else
-                                cameraPos.y += overlapY;
+                                cameraPos.y += penY;
+                            // Also zero out vertical velocity if moving downward.
+                            if (velocity.y < 0)
+                                velocity.y = 0;
                         }
-                        else {
+                        else
+                        {
                             if (cameraPos.z < boxMin.z)
-                                cameraPos.z -= overlapZ;
+                                cameraPos.z -= penZ;
                             else
-                                cameraPos.z += overlapZ;
+                                cameraPos.z += penZ;
                         }
+
+                        // Recalculate player's AABB after adjustment.
                         playerMin = cameraPos + getPlayerBoxMin();
                         playerMax = cameraPos + getPlayerBoxMax();
                     }
                     };
+
+                // Check against each solid block in the chunk.
                 auto checkBlocks = [&](const std::vector<glm::vec3>& blocks) {
                     for (const auto& pos : blocks) {
                         glm::vec3 blockMin = pos;
@@ -777,6 +801,7 @@ void handleCollision() {
                         resolveAABB(blockMin, blockMax);
                     }
                     };
+
                 checkBlocks(ch.grassPositions);
                 checkBlocks(ch.sandPositions);
                 checkBlocks(ch.snowPositions);
@@ -784,24 +809,19 @@ void handleCollision() {
                 checkBlocks(ch.treeTrunkPositions);
                 checkBlocks(ch.oakTrunkPositions);
                 checkBlocks(ch.ancientTrunkPositions);
-                // Other block arrays...
-                // For deep stone blocks, do not skip them even if in water.
                 checkBlocks(ch.waterLilyPositions);
                 checkBlocks(ch.deepStonePositions);
-
+                // ... add other block arrays as needed.
             }
         }
     }
 
-    // Ensure that in water areas (non-land) the player doesn't sink below y = -1.
+    // For water areas, only apply minimal sinking correction.
     TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
     if (!tp.isLand && cameraPos.y < -1.0f)
         cameraPos.y = -1.0f;
-    // Also, if the player would be below the terrain floor when on land, clamp.
-    float terrainY = static_cast<float>(std::floor(tp.height)) + 1.0f;
-    if (cameraPos.y < terrainY)
-        cameraPos.y = terrainY;
 }
+
 
 // ---------------------- Chunk Mesh Generation ----------------------
 void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
@@ -1213,56 +1233,14 @@ void processInput(GLFWwindow* window) {
 
     // Handle movement based on current playerMode.
     switch (playerMode) {
-    case 0: // Standing Mode
+    case 0: // Standing/Walking
     {
-        // ------------------------------------------------------
-        // 1) Determine Environment & Basic Variables
-        // ------------------------------------------------------
-        TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
-        float groundY = std::floor(tp.height) + 1.0f;
-
-        // Suppose your water surface is at y=0.0f. Adjust as needed:
-        const float waterSurface = 0.0f;
-
-        // "actuallyInWater" means the terrain is water, AND we are at/below waterSurface + some epsilon
-        bool actuallyInWater = (!tp.isLand) && (cameraPos.y <= waterSurface + 0.1f);
-
-        // Are we on ground? (Within 0.1f above groundY)
-        bool onGround = (cameraPos.y <= groundY + 0.1f);
-
-        // ------------------------------------------------------
-        // 2) Handle Sprint (with left CTRL)
-        //    - You can only START sprint on the ground.
-        //    - If you let go of CTRL in air, you lose sprint.
-        // ------------------------------------------------------
-        static bool sprintActive = false;
-        if (onGround) {
-            // On ground, pressing left CTRL starts sprint
-            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
-                sprintActive = true;
-            else
-                sprintActive = false;
-        }
-        else {
-            // In air: if you release left CTRL, you lose sprint
-            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) != GLFW_PRESS)
-                sprintActive = false;
-        }
-        // If sprintActive, we multiply speed by 2.0
-        float sprintMultiplier = sprintActive ? 2.0f : 1.0f;
-
-        // ------------------------------------------------------
-        // 3) Compute Horizontal Movement Direction (WASD)
-        // ------------------------------------------------------
-        glm::vec3 forward;
-        forward.x = cos(glm::radians(cameraYaw));
-        forward.y = 0.0f;
-        forward.z = sin(glm::radians(cameraYaw));
-        forward = glm::normalize(forward);
-
-        glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
-        glm::vec3 walkDir(0.0f);
-
+        // -----------------------------------------------
+        // 1) Calculate intended horizontal velocity
+        // -----------------------------------------------
+        glm::vec3 forward = glm::vec3(cos(glm::radians(cameraYaw)), 0.0f, sin(glm::radians(cameraYaw)));
+        glm::vec3 right = glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::vec3 walkDir = glm::vec3(0.0f);
         if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
             walkDir += forward;
         if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
@@ -1271,93 +1249,83 @@ void processInput(GLFWwindow* window) {
             walkDir -= right;
         if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
             walkDir += right;
-
         if (glm::length(walkDir) > 0.001f)
             walkDir = glm::normalize(walkDir);
 
-        // ------------------------------------------------------
-        // 4) Calculate Current Speed
-        // ------------------------------------------------------
-        float currentWalkSpeed = walkSpeed * sprintMultiplier;
+        float currentSpeed = walkSpeed;
+        static bool sprintActive = false;
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+            sprintActive = true;
+        else
+            sprintActive = false;
+        if (sprintActive)
+            currentSpeed *= 2.0f;
 
-        // If actually in water, slow the player
-        if (actuallyInWater) {
-            currentWalkSpeed *= 0.3f;  // e.g. 30% speed in water
-        }
+        // The "desired" horizontal velocity is walkDir * currentSpeed.
+        glm::vec3 desiredHorizVel = walkDir * currentSpeed;
 
-        // ------------------------------------------------------
-        // 5) Apply Horizontal Movement
-        // ------------------------------------------------------
-        glm::vec3 prevPos = cameraPos; // Save for autostep
-        cameraPos += walkDir * currentWalkSpeed * deltaTime;
+        // -----------------------------------------------
+        // 2) Smoothly blend the horizontal velocity
+        // -----------------------------------------------
+        glm::vec3 oldVel = velocity;
+        glm::vec3 newVel = oldVel;
+        float blendFactor = 10.0f * deltaTime;  // Adjust blend factor as needed.
+        glm::vec3 oldHoriz = glm::vec3(oldVel.x, 0.0f, oldVel.z);
+        glm::vec3 nextHoriz = glm::mix(oldHoriz, desiredHorizVel, blendFactor);
+        newVel.x = nextHoriz.x;
+        newVel.z = nextHoriz.z;
+        velocity = newVel;
 
-        // ------------------------------------------------------
-        // 6) Autostep Logic (Step up 1 block if needed)
-        //    This is a simple example that checks a point 0.5m
-        //    in front of the player for a small obstacle.
-        // ------------------------------------------------------
-        {
-            glm::vec3 stepCheckPos = cameraPos + forward * 0.5f; // 0.5 blocks in front
-            TerrainPoint tpStep = getTerrainHeight(stepCheckPos.x, stepCheckPos.z);
-            float stepGroundY = std::floor(tpStep.height) + 1.0f;
-            float heightDiff = stepGroundY - groundY;
-            // If the step is small (< 1 block) and is higher than current ground
-            if (heightDiff > 0.0f && heightDiff < 1.0f) {
-                // "step up" by the difference
-                cameraPos.y += heightDiff;
-                groundY = stepGroundY; // new ground level
-            }
-        }
-
-        // ------------------------------------------------------
-        // 7) Jump Logic
-        //    - Normal jump if on ground
-        //    - Small "water jump" if partially submerged
-        // ------------------------------------------------------
+        // -----------------------------------------------
+        // 3) Handle Jump Input (Allow jump on ground or in water)
+        // -----------------------------------------------
         static bool spaceWasPressed = false;
-        if (!spaceWasPressed && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            if (onGround) {
-                jumpVelocity = walkJumpImpulse; // e.g. 4.8f, adjust as needed
-            }
-            else if (actuallyInWater) {
-                // Optionally allow a small jump if in water
-                float waterJumpLimit = waterSurface + 0.5f;
-                if (cameraPos.y < waterJumpLimit)
-                    jumpVelocity = 6.0f; // water jump impulse (adjust as needed)
-            }
-            spaceWasPressed = true;
-        }
-        else if (glfwGetKey(window, GLFW_KEY_SPACE) != GLFW_PRESS) {
-            spaceWasPressed = false;
-        }
-
-        // ------------------------------------------------------
-        // 8) Gravity & Vertical Update
-        // ------------------------------------------------------
-        jumpVelocity -= walkGravity * deltaTime;
-        cameraPos.y += jumpVelocity * deltaTime;
-
-        // ------------------------------------------------------
-        // 9) Clamp Vertical Position
-        //    - If on land, clamp to ground
-        //    - If in water, clamp to water surface
-        // ------------------------------------------------------
-        if (actuallyInWater) {
-            if (cameraPos.y < waterSurface) {
-                cameraPos.y = waterSurface;
-                jumpVelocity = 0.0f;
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+            if (!spaceWasPressed) {
+                TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+                float groundY = floor(tp.height) + 1.0f;
+                bool onGround = (cameraPos.y <= groundY + 0.1f);
+                // Check if in water: not land and near the water surface.
+                bool inWater = (!tp.isLand && cameraPos.y <= WATER_SURFACE + 0.1f);
+                if (onGround || inWater) {
+                    if (inWater) {
+                        velocity.y = waterJumpImpulse; // water jump impulse (6.0f)
+                    }
+                    else {
+                        velocity.y = walkJumpImpulse; // normal jump impulse (4.8f)
+                    }
+                }
+                spaceWasPressed = true;
             }
         }
         else {
-            // If below ground, clamp
-            if (cameraPos.y < groundY) {
-                cameraPos.y = groundY;
-                jumpVelocity = 0.0f;
-            }
+            spaceWasPressed = false;
         }
 
+        // -----------------------------------------------
+        // 4) Apply Gravity
+        // -----------------------------------------------
+        velocity.y -= walkGravity * deltaTime;
+
+        // -----------------------------------------------
+        // 5) Separate Horizontal and Vertical Position Updates
+        // -----------------------------------------------
+        // Update horizontal (X/Z) movement:
+        glm::vec3 horizVel(velocity.x, 0.0f, velocity.z);
+        glm::vec3 newPosHoriz = cameraPos + horizVel * deltaTime;
+        cameraPos.x = newPosHoriz.x;
+        cameraPos.z = newPosHoriz.z;
+
+        // Update vertical (Y) movement:
+        glm::vec3 vertVel(0.0f, velocity.y, 0.0f);
+        glm::vec3 newPosVert = cameraPos + vertVel * deltaTime;
+        cameraPos.y = newPosVert.y;
+
+        break;
     }
-    break;
+
+
+
 
 
 
@@ -1444,36 +1412,67 @@ void processInput(GLFWwindow* window) {
     }
     break;
 
-
-
-    case 3: // Paraglide (in air)
+    case 3: // Paraglider
     {
+        // 1) Compute the look direction
         glm::vec3 viewDir;
         viewDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         viewDir.y = sin(glm::radians(pitch));
         viewDir.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(pitch));
         viewDir = glm::normalize(viewDir);
+
+        // 2) Gently turn velocity horizontally toward the camera’s heading
         float steeringFactor = 0.02f;
-        velocity = glm::mix(velocity, viewDir * glm::length(velocity), steeringFactor);
-        float pitchFactor = -pitch / 90.0f;
-        float accel = baseAcceleration * pitchFactor;
-        velocity += viewDir * accel * deltaTime;
-        // Reduced gravity for gliding.
-        velocity.y -= (gravityForce * 0.3f) * deltaTime;
-        velocity *= dragFactor;
-        cameraPos += velocity * deltaTime;
-        static bool spaceWasPressed = false;
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
-            if (!spaceWasPressed) {
-                velocity += viewDir * boostImpulse;
-                spaceWasPressed = true;
+        float speed = glm::length(velocity);
+        if (speed > 0.01f) {
+            // Only rotate the XZ plane portion
+            glm::vec3 velXZ(velocity.x, 0.0f, velocity.z);
+            float horizSpeed = glm::length(velXZ);
+            if (horizSpeed > 0.001f) {
+                glm::vec3 horizDir = glm::normalize(velXZ);
+                glm::vec3 desiredDir = glm::normalize(glm::vec3(viewDir.x, 0.0f, viewDir.z));
+                glm::vec3 newDir = glm::mix(horizDir, desiredDir, steeringFactor);
+                newDir = glm::normalize(newDir) * horizSpeed;
+                velocity.x = newDir.x;
+                velocity.z = newDir.z;
             }
         }
-        else {
-            spaceWasPressed = false;
+
+        // 3) Adjust speed by pitch (similar to your existing logic)
+        //    Negative pitch => accelerate forward, positive => slow
+        float pitchFactor = -pitch / 90.0f; // pitch: -89..+89 => pitchFactor in [-, +]
+        float accel = baseAcceleration * pitchFactor;
+        velocity += viewDir * accel * deltaTime;
+
+        // 4) Reduced gravity
+        float gliderGravity = gravityForce * 0.3f;
+        velocity.y -= gliderGravity * deltaTime;
+
+        // 5) Apply drag
+        velocity *= dragFactor; // e.g. ~0.995
+
+        // 6) Remove rocket–boost code
+        //    If you had something like:
+        //        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {...}
+        //    we remove it entirely. No boost.
+
+        // 7) Move the player
+        cameraPos += velocity * deltaTime;
+
+        // 8) Optional: if you want to auto–exit paraglider mode on ground
+        TerrainPoint tp = getTerrainHeight(cameraPos.x, cameraPos.z);
+        float groundY = floor(tp.height) + 1.0f;
+        bool landed = (cameraPos.y <= groundY + 0.1f);
+        if (landed) {
+            // Snap to ground and revert to standing
+            cameraPos.y = groundY;
+            velocity.y = 0.0f;
+            playerMode = 0;
         }
     }
     break;
+
+
     }
 
     handleCollision();
