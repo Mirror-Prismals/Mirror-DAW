@@ -822,7 +822,6 @@ void handleCollision() {
         cameraPos.y = -1.0f;
 }
 
-
 // ---------------------- Chunk Mesh Generation ----------------------
 void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     if (!chunk.needsMeshUpdate)
@@ -926,29 +925,35 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
                 if (terrain.height > 2.0) {
                     int intWorldX = static_cast<int>(worldX);
                     int intWorldZ = static_cast<int>(worldZ);
+                    // ----- Pine Tree Branch for far chunks -----
                     if (currentChunkZ <= -40) {
                         int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
                         glm::vec3 pineBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                         if (hashValPine % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, pineBase)) {
                             int trunkHeight = 60, trunkThickness = 4;
-                            for (int i = 1; i <= trunkHeight; i++) {
+                            int extraHeight = 30; // extra blocks on top of the original trunk
+                            for (int i = 1; i <= trunkHeight + extraHeight; i++) {
                                 for (int tx = 0; tx < trunkThickness; tx++) {
                                     for (int tz = 0; tz < trunkThickness; tz++) {
+                                        // Notice we always add trunk blocks relative to worldX+tx, groundHeight+i, worldZ+tz
                                         chunk.treeTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
                                     }
                                 }
                             }
+                            // Generate canopy at the original trunk height
                             std::vector<glm::vec3> pineCanopy = generatePineCanopy(groundHeight, trunkHeight, trunkThickness, worldX, worldZ);
                             chunk.treeLeafPositions.insert(chunk.treeLeafPositions.end(), pineCanopy.begin(), pineCanopy.end());
                         }
                     }
+                    // ----- Pine Tree Branch for other areas -----
                     else if ((chunkX < 20) || (currentChunkZ >= 40)) {
                         if (currentChunkZ < 40) {
                             int hashValPine = std::abs((intWorldX * 73856093) ^ (intWorldZ * 19349663));
                             glm::vec3 pineBase = glm::vec3(worldX, groundHeight + 1, worldZ);
                             if (hashValPine % 2000 < 1 && !treeCollision(chunk.treeTrunkPositions, pineBase)) {
                                 int trunkHeight = 60, trunkThickness = 4;
-                                for (int i = 1; i <= trunkHeight; i++) {
+                                int extraHeight = 30; // extra trunk blocks at the top
+                                for (int i = 1; i <= trunkHeight + extraHeight; i++) {
                                     for (int tx = 0; tx < trunkThickness; tx++) {
                                         for (int tz = 0; tz < trunkThickness; tz++) {
                                             chunk.treeTrunkPositions.push_back(glm::vec3(worldX + tx, groundHeight + i, worldZ + tz));
@@ -1152,6 +1157,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
     visitedChunks.insert(ChunkPos(chunkX, chunkZ));
     bigMapDirty = true;
 }
+
 
 // ---------------------- Chunk Update ----------------------
 void updateChunks() {
@@ -1639,7 +1645,7 @@ in vec2 TexCoord;
 in vec3 ourColor;
 in float instanceDistance;
 in vec3 Normal;
-in vec3 WorldPos;  // World-space position passed from the vertex shader
+in vec3 WorldPos;  // World-space position from the vertex shader
 
 out vec4 FragColor;
 
@@ -1650,43 +1656,47 @@ uniform vec3 ambientLight;
 uniform vec3 diffuseLight;
 uniform float time;
 
-// A simple noise function based on cell coordinates (constant per cell)
+// Simple noise function that returns a pseudo-random value for a given cell
 float generateNoise(vec2 cell) {
     return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
 }
 
 void main(){
-    // Special case for translucent aurora blocks (blockType 19)
+    // Special handling for translucent aurora blocks (blockType 19)
     if(blockType == 19){
         FragColor = vec4(ourColor, 0.1);
         return;
     }
     
-    // Define grid parameters for a 24x24 grid:
-    float gridSize = 24.0;
+    // Define grid parameters: both grid overlay and noise sampling use 12x12 cells.
+    float gridSize = 12.0;
     float lineWidth = 0.03;
+    float leafNoiseSize = 12.0;
     
-    // For leaf blocks, we want both the grid overlay and the noise crack effect.
+    // For leaf blocks, we want the grid overlay plus a randomized noise "crack" effect.
     if(blockType == 3 || blockType == 7 || blockType == 9 || blockType == 17){
-        // Compute the grid fraction WITHOUT the random seed to show consistent grid lines.
+        // 1. Determine grid lines using the unshifted TexCoord.
         vec2 f = fract(TexCoord * gridSize);
         bool isGridLine = (f.x < lineWidth || f.y < lineWidth);
         
-        // Compute a per-block random seed from world position so noise differs between blocks.
-        vec2 seed = fract(WorldPos.xy * 0.12345);
-        // Now shift the texture coordinate by this seed when sampling noise,
-        // so that each leaf block gets a different noise pattern.
-        vec2 cell = floor((TexCoord + seed) * gridSize);
+        // 2. Compute a per-block seed using the block's integer world coordinates.
+        // Using floor(WorldPos.xy) makes sure that all fragments for a given block share the same seed.
+        vec2 blockCoord = floor(WorldPos.xy);
+        vec2 seed = fract(blockCoord * 0.12345);
+        
+        // 3. Use the seed to offset the TexCoord when sampling noise, using leafNoiseSize.
+        vec2 cell = floor((TexCoord + seed) * leafNoiseSize);
         float noiseVal = generateNoise(cell);
-        // Adjust threshold to control crack density
-        float crackThreshold = 0.96;
-        // In non–grid areas, use the noise to decide transparency.
+        
+        // 4. Threshold the noise to determine the crack transparency.
+        float crackThreshold = 0.8;
         float noiseAlpha = (noiseVal > crackThreshold) ? 0.0 : 1.0;
-        // For grid lines, force alpha to 1.0 and color to black.
+        
+        // 5. For grid lines, force black color and full opacity.
         float finalAlpha = isGridLine ? 1.0 : noiseAlpha;
         vec3 finalColor = isGridLine ? vec3(0.0) : ourColor;
         
-        // Apply simple diffuse lighting.
+        // 6. Apply simple diffuse lighting.
         vec3 norm = normalize(Normal);
         float diff = max(dot(norm, normalize(lightDir)), 0.0);
         vec3 lighting = ambientLight + diffuseLight * diff;
@@ -1696,7 +1706,7 @@ void main(){
         return;
     }
     
-    // WATER RENDERING (blockType 1): seamless water with a wave effect.
+    // WATER BLOCKS (blockType 1): apply a wave effect.
     if(blockType == 1){
         vec3 waterColor = blockColors[1];
         float wave1 = sin(WorldPos.x * 0.1 + time * 2.0);
@@ -1712,7 +1722,7 @@ void main(){
         FragColor = vec4(finalColor, 0.3);
     }
     else {
-        // NON-WATER, NON-LEAF BLOCKS: apply the grid overlay effect.
+        // NON-WATER, NON-LEAF BLOCKS: grid overlay effect.
         vec2 f = fract(TexCoord * gridSize);
         vec3 baseColor;
         if(f.x < lineWidth || f.y < lineWidth)
@@ -1732,8 +1742,6 @@ void main(){
         FragColor = vec4(finalColor, 1.0);
     }
 }
-
-
 
 
 
