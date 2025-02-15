@@ -1650,42 +1650,71 @@ uniform vec3 ambientLight;
 uniform vec3 diffuseLight;
 uniform float time;
 
+// A simple noise function based on cell coordinates (constant per cell)
+float generateNoise(vec2 cell) {
+    return fract(sin(dot(cell, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
 void main(){
+    // Special case for translucent aurora blocks (blockType 19)
     if(blockType == 19){
         FragColor = vec4(ourColor, 0.1);
         return;
     }
     
-    // WATER RENDERING: seamless water with a wave effect
-    if(blockType == 1){
-        // Use the base water color from blockColors[1]
-        vec3 waterColor = blockColors[1];
+    // Define grid parameters for a 24x24 grid:
+    float gridSize = 24.0;
+    float lineWidth = 0.03;
+    
+    // For leaf blocks, we want both the grid overlay and the noise crack effect.
+    if(blockType == 3 || blockType == 7 || blockType == 9 || blockType == 17){
+        // Compute the grid fraction WITHOUT the random seed to show consistent grid lines.
+        vec2 f = fract(TexCoord * gridSize);
+        bool isGridLine = (f.x < lineWidth || f.y < lineWidth);
         
-        // Compute a wave effect using world coordinates and time.
-        // Adjust the frequency and speed as desired.
+        // Compute a per-block random seed from world position so noise differs between blocks.
+        vec2 seed = fract(WorldPos.xy * 0.12345);
+        // Now shift the texture coordinate by this seed when sampling noise,
+        // so that each leaf block gets a different noise pattern.
+        vec2 cell = floor((TexCoord + seed) * gridSize);
+        float noiseVal = generateNoise(cell);
+        // Adjust threshold to control crack density
+        float crackThreshold = 0.96;
+        // In non–grid areas, use the noise to decide transparency.
+        float noiseAlpha = (noiseVal > crackThreshold) ? 0.0 : 1.0;
+        // For grid lines, force alpha to 1.0 and color to black.
+        float finalAlpha = isGridLine ? 1.0 : noiseAlpha;
+        vec3 finalColor = isGridLine ? vec3(0.0) : ourColor;
+        
+        // Apply simple diffuse lighting.
+        vec3 norm = normalize(Normal);
+        float diff = max(dot(norm, normalize(lightDir)), 0.0);
+        vec3 lighting = ambientLight + diffuseLight * diff;
+        finalColor *= lighting;
+        
+        FragColor = vec4(finalColor, finalAlpha);
+        return;
+    }
+    
+    // WATER RENDERING (blockType 1): seamless water with a wave effect.
+    if(blockType == 1){
+        vec3 waterColor = blockColors[1];
         float wave1 = sin(WorldPos.x * 0.1 + time * 2.0);
         float wave2 = cos(WorldPos.z * 0.1 + time * 2.0);
-        float wave = (wave1 + wave2) * 0.5; // Combined wave value in [-1,1]
-        
-        // Modulate the water color slightly based on the wave
+        float wave = (wave1 + wave2) * 0.5;
         waterColor *= (1.0 + wave * 0.1);
         
-        // Compute simple diffuse lighting
         vec3 norm = normalize(Normal);
         float diff = max(dot(norm, normalize(lightDir)), 0.0);
         vec3 lighting = ambientLight + diffuseLight * diff;
         vec3 finalColor = waterColor * lighting;
         
-        // Set water to be translucent (alpha = 0.3)
         FragColor = vec4(finalColor, 0.3);
     }
     else {
-        // NON-WATER RENDERING: apply grid overlay effect for other blocks
-        float gridSize = 24.0;
-        float lineWidth = 0.03;
+        // NON-WATER, NON-LEAF BLOCKS: apply the grid overlay effect.
         vec2 f = fract(TexCoord * gridSize);
         vec3 baseColor;
-        
         if(f.x < lineWidth || f.y < lineWidth)
             baseColor = vec3(0.0, 0.0, 0.0);
         else {
@@ -1703,6 +1732,11 @@ void main(){
         FragColor = vec4(finalColor, 1.0);
     }
 }
+
+
+
+
+
 )";
 
 // --- Minimap Vertex Shader ---
