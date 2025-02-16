@@ -64,7 +64,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1920;
 const unsigned int WINDOW_HEIGHT = 1080;
-const float RENDER_DISTANCE = 10.0f;
+const float RENDER_DISTANCE = 28.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 const float WATER_SURFACE = 0.0f; // water is drawn at y=0
@@ -1245,23 +1245,31 @@ void updateChunks() {
     int playerChunkX = static_cast<int>(std::floor(cameraPos.x / CHUNK_SIZE));
     int playerChunkZ = static_cast<int>(std::floor(cameraPos.z / CHUNK_SIZE));
     int renderDistance = static_cast<int>(RENDER_DISTANCE);
+    int renderDistanceSquared = renderDistance * renderDistance;
+
     for (auto it = chunks.begin(); it != chunks.end();) {
-        int dx = std::abs(it->first.x - playerChunkX);
-        int dz = std::abs(it->first.z - playerChunkZ);
-        if (dx > renderDistance || dz > renderDistance)
+        int dx = it->first.x - playerChunkX;
+        int dz = it->first.z - playerChunkZ;
+        if (dx * dx + dz * dz > renderDistanceSquared)
             it = chunks.erase(it);
         else
             ++it;
     }
+
     for (int x = playerChunkX - renderDistance; x <= playerChunkX + renderDistance; x++) {
         for (int z = playerChunkZ - renderDistance; z <= playerChunkZ + renderDistance; z++) {
-            ChunkPos pos{ x, z };
-            if (chunks.find(pos) == chunks.end())
-                chunks[pos] = Chunk();
-            generateChunkMesh(chunks[pos], x, z);
+            int dx = x - playerChunkX;
+            int dz = z - playerChunkZ;
+            if (dx * dx + dz * dz <= renderDistanceSquared) {
+                ChunkPos pos{ x, z };
+                if (chunks.find(pos) == chunks.end())
+                    chunks[pos] = Chunk();
+                generateChunkMesh(chunks[pos], x, z);
+            }
         }
     }
 }
+
 
 // ---------------------- Input Handling ----------------------
 
@@ -2404,6 +2412,8 @@ int main() {
         else
             eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
         glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 viewNoTranslation = glm::mat4(glm::mat3(view));
+
         glm::mat4 viewNoRotation = glm::mat4(glm::mat3(view));
 
         glm::mat4 projection = glm::perspective(glm::radians(103.0f),
@@ -2468,7 +2478,8 @@ int main() {
         glUseProgram(starShaderProgram);
         glUniform1f(glGetUniformLocation(starShaderProgram, "time"), currentFrame);
 
-        glUniformMatrix4fv(glGetUniformLocation(starShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(starShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(viewNoTranslation));
+
         glUniformMatrix4fv(glGetUniformLocation(starShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
         glBindVertexArray(starVAO);
         glDrawArrays(GL_POINTS, 0, starPositions.size());
