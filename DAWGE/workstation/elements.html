@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RubyDAW – Enhanced Outlet Socket Adjustments</title>
+  <style>
+    :root {
+      --center-color: #400000;  /* Background center */
+      --edge-color: #100000;    /* Background edges */
+      --accent-color: #b71c1c;  /* Ruby accent */
+      --accent-hover: #d32f2f;
+      --inset-dark: rgba(0, 0, 0, 1);
+      --inset-light: rgba(255, 255, 255, 0.5);
+      --socket-hole: #000;      /* For slits & ground hole */
+    }
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      background: radial-gradient(circle at center, var(--center-color), var(--edge-color));
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: sans-serif;
+      overflow: hidden;
+    }
+    .control-container {
+      display: flex;
+      gap: 40px;
+      align-items: center;
+      justify-content: center;
+    }
+    /* --- Existing Ruby Controls --- */
+    button {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      width: 60px;
+      height: 60px;
+      position: relative;
+    }
+    .btn-play::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: linear-gradient(145deg, var(--accent-color), var(--accent-hover));
+      clip-path: path("M0,8 Q0,0 7.2,3.6 L52.8,26.4 Q60,30 52.8,33.6 L7.2,56.4 Q0,60 0,52 Z");
+      box-shadow: inset 4px 4px 8px var(--inset-dark), 
+                  inset -4px -4px 8px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+      backdrop-filter: blur(2px);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .btn-play:hover::before {
+      transform: scale(1.1);
+      box-shadow: inset 4px 4px 10px var(--inset-dark), 
+                  inset -4px -4px 10px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+    }
+    .mixer-knob {
+      width: 60px; 
+      height: 60px;
+      background: radial-gradient(circle, var(--accent-color), #8e0000);
+      border-radius: 50%;
+      box-shadow: inset 4px 4px 8px var(--inset-dark), 
+                  inset -4px -4px 8px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+    .mixer-knob:active {
+      transform: scale(0.9);
+    }
+    .square-control {
+      width: 60px; 
+      height: 60px;
+      background: linear-gradient(145deg, var(--accent-color), var(--accent-hover));
+      border-radius: 10px;
+      box-shadow: inset 4px 4px 8px var(--inset-dark), 
+                  inset -4px -4px 8px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .square-control:hover {
+      transform: scale(1.1);
+      box-shadow: inset 4px 4px 10px var(--inset-dark), 
+                  inset -4px -4px 10px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+    }
+    .mixer-fader {
+      width: 20px; 
+      height: 120px;
+      background: linear-gradient(145deg, rgba(183,28,28,0.7), rgba(211,47,47,0.5));
+      border-radius: 10px;
+      position: relative;
+      cursor: pointer;
+      box-shadow: inset 4px 4px 8px var(--inset-dark), 
+                  inset -4px -4px 8px var(--inset-light),
+                  0 4px 6px rgba(0,0,0,0.7);
+      backdrop-filter: blur(2px);
+    }
+    .fader-thumb {
+      position: absolute;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 30px; 
+      height: 10px;
+      background: linear-gradient(145deg, var(--accent-color), var(--accent-hover));
+      border-radius: 5px;
+      cursor: pointer;
+      box-shadow: inset 4px 4px 8px var(--inset-dark), 
+                  inset -4px -4px 8px var(--inset-light);
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .fader-thumb:hover {
+      transform: scale(1.05);
+      box-shadow: inset 4px 4px 10px var(--inset-dark), 
+                  inset -4px -4px 10px var(--inset-light);
+    }
+    /* --- Outlet Socket --- */
+    .outlet-socket {
+      width: 60px;
+      height: 80px;
+      position: relative;
+      background: linear-gradient(145deg, var(--accent-color), var(--accent-hover));
+      border-radius: 50%;
+      /* Clip off 10px from top and bottom while preserving curved sides */
+      clip-path: inset(10px 0 10px 0 round 50%);
+      /* Stronger inset shadows for a pronounced bevel along the flat edges */
+      box-shadow: inset 0 8px 12px var(--inset-dark), inset 0 -8px 12px var(--inset-light),
+                  0 6px 10px rgba(0,0,0,0.9);
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .outlet-socket:hover {
+      transform: scale(1.05);
+      box-shadow: inset 0 9px 14px var(--inset-dark), inset 0 -9px 14px var(--inset-light),
+                  0 6px 10px rgba(0,0,0,0.9);
+    }
+    /* Outlet Slits */
+    .left-slit {
+      position: absolute;
+      top: 35%;
+      left: 32%; /* moved further left to widen gap */
+      width: 4px;
+      height: 16px;  /* reduced height by 2px from 18px */
+      background: var(--socket-hole);
+      box-shadow: inset 1px 1px 3px var(--inset-dark), 
+                  inset -1px -1px 3px var(--inset-light);
+    }
+    .right-slit {
+      position: absolute;
+      top: 35%;
+      right: 32%; /* moved further right */
+      width: 4px;
+      height: 14px;
+      background: var(--socket-hole);
+      box-shadow: inset 1px 1px 3px var(--inset-dark), 
+                  inset -1px -1px 3px var(--inset-light);
+    }
+    /* Ground Hole – Increased size to 8px, lowered to 62% */
+    .ground-hole {
+      position: absolute;
+      top: 62%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 8px;
+      height: 8px;
+      background: var(--socket-hole);
+      clip-path: path("M0,8 V3 Q0,0 4,0 Q8,0 8,3 V8 Z");
+      box-shadow: inset 1px 1px 3px var(--inset-dark), 
+                  inset -1px -1px 3px var(--inset-light);
+    }
+  </style>
+</head>
+<body>
+  <div class="control-container">
+    <!-- Rounded Triangle Play Button -->
+    <button class="btn-play"></button>
+    <!-- 3D Knob -->
+    <div class="mixer-knob"></div>
+    <!-- Square Control -->
+    <div class="square-control"></div>
+    <!-- Outlet Socket with Adjusted Slits and Ground Hole -->
+    <div class="outlet-socket">
+      <div class="left-slit"></div>
+      <div class="right-slit"></div>
+      <div class="ground-hole"></div>
+    </div>
+    <!-- 3D Fader -->
+    <div class="mixer-fader">
+      <div class="fader-thumb" style="bottom: 50%;"></div>
+    </div>
+  </div>
+
+  <script>
+    // Mixer Knob Interaction – drag to rotate
+    const knob = document.querySelector('.mixer-knob');
+    knob.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      let startRotation = parseFloat(knob.getAttribute('data-rotation')) || 0;
+      const onMouseMove = (e) => {
+        const delta = e.clientY - startY;
+        const newRotation = startRotation - delta;
+        knob.style.transform = `rotate(${newRotation}deg)`;
+        knob.setAttribute('data-rotation', newRotation);
+      };
+      const onMouseUp = () => {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      };
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+    // Mixer Fader Interaction – drag to adjust thumb vertically
+    const fader = document.querySelector('.mixer-fader');
+    const thumb = fader.querySelector('.fader-thumb');
+    let isDragging = false;
+    thumb.addEventListener('mousedown', () => { isDragging = true; });
+    document.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const rect = fader.getBoundingClientRect();
+        let pos = (rect.bottom - e.clientY) / rect.height;
+        pos = Math.max(0, Math.min(1, pos));
+        thumb.style.bottom = (pos * 100) + '%';
+      }
+    });
+    document.addEventListener('mouseup', () => { isDragging = false; });
+  </script>
+</body>
+</html>
