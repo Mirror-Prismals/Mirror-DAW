@@ -124,51 +124,21 @@ void main(){
 
 const char* skyboxFragmentShaderSource = R"(
 #version 330 core
-in vec2 TexCoord;
 out vec4 FragColor;
+
+in vec2 TexCoord;
 
 uniform vec3 skyTop;
 uniform vec3 skyBottom;
-uniform float time;        // Global time
-uniform vec2 starOffset;   // Derived from camera rotation
+uniform float time;  // still available in case you need time‐based effects
 
-// Simple random function based on input coordinates.
-float rand(vec2 co) {
-    return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
-}
-
-void main(){
-    // Base sky gradient.
+void main()
+{
+    // Create a simple vertical gradient from skyBottom (at y=0) to skyTop (at y=1)
     vec3 color = mix(skyBottom, skyTop, TexCoord.y);
-
-    // Use the starOffset (derived from camera yaw/pitch) to adjust the star field.
-    vec2 starUV = (TexCoord + starOffset) * 1000.0;
-    vec2 cellId = floor(starUV);
-    
-    // Only a few cells become stars.
-    float starValue = rand(cellId);
-    
-    // Lower threshold to increase star density.
-    if(starValue > 0.995) {
-        // Two independent random values: one for frequency and one for phase.
-        float freqRand  = rand(cellId + vec2(1.0, 1.0));
-        float phaseRand = rand(cellId + vec2(2.0, 3.0));
-        
-        // Each star gets a random frequency between 3.0 and 5.0; slow twinkle with time * 0.2.
-        float frequency = 3.0 + freqRand * 2.0;
-        float twinkle = 0.5 + 0.5 * sin(time * frequency * 0.2 + phaseRand * 6.2831);
-
-        // Create a round star shape.
-        vec2 f = fract(starUV) - 0.5;
-        float dist = length(f);
-        float starAlpha = smoothstep(0.3, 0.2, dist); // Adjust for star size/softness
-
-        // Add the star (additively) to the sky color.
-        color += vec3(twinkle) * starAlpha;
-    }
-    
     FragColor = vec4(color, 1.0);
 }
+
 )";
 
 GLuint skyboxVAO, skyboxVBO;
@@ -1328,7 +1298,7 @@ void processInput(GLFWwindow* window) {
 
     // Handle movement based on current playerMode.
     switch (playerMode) {
- 
+
     case 0: // Standing/Walking
     {
         // -----------------------------------------------
@@ -1471,6 +1441,8 @@ void processInput(GLFWwindow* window) {
 
         break;
     }
+
+
 
 
 
@@ -2345,6 +2317,8 @@ int main() {
         else
             eyePos = cameraPos + glm::vec3(0.0f, eyeLevelOffset, 0.0f);
         glm::mat4 view = glm::lookAt(eyePos, eyePos + front, glm::vec3(0.0f, 1.0f, 0.0f));
+        glm::mat4 viewNoRotation = glm::mat4(glm::mat3(view));
+
         glm::mat4 projection = glm::perspective(glm::radians(103.0f),
             static_cast<float>(WINDOW_WIDTH) / static_cast<float>(WINDOW_HEIGHT),
             0.1f, 10000.0f);
@@ -2384,9 +2358,11 @@ int main() {
 
         glm::vec3 skyTop, skyBottom;
         getCurrentSkyColors(dayFraction, skyTop, skyBottom);
-        float offsetX = cameraYaw / 360.0f;
-        float offsetY = pitch / 180.0f;
+        // Cancel out the camera's yaw (and ignore pitch for the stars)
+        float offsetX = -cameraYaw / 360.0f;
+        float offsetY = 0.0f;
         glUniform2f(glGetUniformLocation(skyboxShaderProgram, "starOffset"), offsetX, offsetY);
+
 
         // --- Draw Skybox ---
         glDepthMask(GL_FALSE);
