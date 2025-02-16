@@ -64,7 +64,7 @@ namespace std {
 // ---------------------- Global Constants ----------------------
 const unsigned int WINDOW_WIDTH = 1920;
 const unsigned int WINDOW_HEIGHT = 1080;
-const float RENDER_DISTANCE = 28.0f;
+const float RENDER_DISTANCE = 18.0f;
 const int CHUNK_SIZE = 16;
 const int MIN_Y = -1;
 const float WATER_SURFACE = 0.0f; // water is drawn at y=0
@@ -73,11 +73,8 @@ const float WATER_SURFACE = 0.0f; // water is drawn at y=0
 
 // Player/camera and movement variables
 glm::vec3 waterLilyLaunchMomentum = glm::vec3(0.0f);
-// Global variable for the sprint tint effect (extra blue tint)
-// Track sprint timer for the incremental speed boost.
-static float sprintTimer = 0.0f;
-// For clarity, also track whether sprint is currently active.
-static bool sprintActive = false;
+
+
 
 
 glm::vec3 cameraPos = glm::vec3(0.0f, 10.0f, 3.0f);
@@ -1227,7 +1224,7 @@ void generateChunkMesh(Chunk& chunk, int chunkX, int chunkZ) {
         for (int z = 0; z < CHUNK_SIZE; z++) {
             double worldX = chunkX * CHUNK_SIZE + x;
             double worldZ = chunkZ * CHUNK_SIZE + z;
-            for (int y = 135; y <= 136; y++) {
+            for (int y = 165; y <= 166; y++) {
                 double n = auroraNoise.noise(worldX * 0.1, y * 0.1, worldZ * 0.1);
                 if (n > 0.44)
                     chunk.auroraPositions.push_back(glm::vec3(worldX, y, worldZ));
