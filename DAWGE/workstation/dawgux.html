@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Oxblood DAW – Full Hide + Timeline Expansion</title>
+  <style>
+    :root {
+      /* Oxblood background */
+      --bg-center: #400000;
+      --bg-edge: #100000;
+
+      /* Distinct panel colors so you can see them clearly */
+      --sample-color: #803030;   /* sample manager */
+      --timeline-color: #602020; /* timeline */
+      --fxchain-color: #701010;  /* fx chain */
+
+      /* For the timeline's bevel animation */
+      --bevel-dark-rgb: 0, 0, 0;
+      --bevel-light-rgb: 255, 255, 255;
+    }
+    * {
+      margin: 0; padding: 0; box-sizing: border-box;
+    }
+
+    /* The main layout is controlled dynamically by JS
+       We'll set an initial 2-col (20%-80%) x 2-row (70%-30%) in the HTML,
+       then override it in JS to update columns/rows. */
+    body {
+      background: radial-gradient(circle at center, var(--bg-center), var(--bg-edge));
+      display: grid;
+      width: 100vw; height: 100vh;
+      grid-template-columns: 20% 80%;
+      grid-template-rows: 70% 30%;
+      grid-template-areas:
+        "sample timeline"
+        "sample fxchain";
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+
+    /* Sample manager container in the left column */
+    .sample-container {
+      grid-area: sample;
+      position: relative;
+      overflow: visible;
+      background: #222; /* behind the panel */
+    }
+    .sample-manager {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: var(--sample-color);
+      border-radius: 8px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 1.2rem;
+      transition: transform 0.5s ease, opacity 0.5s ease;
+    }
+    .sample-manager::before {
+      content: "SAMPLE MANAGER";
+    }
+    /* Slide off left but leave 20px */
+    .sample-manager.hidden {
+      transform: translateX(calc(-100% + 20px));
+      opacity: 0.4;
+    }
+    /* Tab for sample manager, always visible at top-left of container */
+    .sample-tab {
+      position: absolute;
+      top: 0; left: 0;
+      width: 20px; height: 40px;
+      background: #444;
+      border-radius: 0 0 8px 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.8);
+      cursor: pointer;
+      color: white;
+      font-size: 0.8rem;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10;
+    }
+    .sample-tab::before {
+      content: "←";
+    }
+    .sample-manager.hidden + .sample-tab::before {
+      content: "→";
+    }
+
+    /* Timeline (top-right) */
+    .timeline {
+      grid-area: timeline;
+      background: var(--timeline-color);
+      border-radius: 8px;
+      margin-left: 10px; margin-bottom: 10px;
+      box-shadow:
+        inset 4px 4px 8px rgba(var(--bevel-dark-rgb),1),
+        inset -4px -4px 8px rgba(var(--bevel-light-rgb),0.5),
+        0 4px 6px rgba(0,0,0,0.7);
+      transition: margin 0.5s ease, box-shadow 0.5s ease;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 1.2rem;
+    }
+    .timeline::before {
+      content: "TIMELINE";
+    }
+
+    /* FX chain container (bottom-right) */
+    .fxchain-container {
+      grid-area: fxchain;
+      position: relative;
+      overflow: visible;
+      background: #222; /* behind the panel */
+    }
+    .fx-chain {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: var(--fxchain-color);
+      border-radius: 8px;
+      box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 1.2rem;
+      transition: transform 0.5s ease, opacity 0.5s ease;
+    }
+    .fx-chain::before {
+      content: "FX CHAIN";
+    }
+    /* Fully hide off bottom (no 20px leftover) */
+    .fx-chain.hidden {
+      transform: translateY(100%);
+      opacity: 0.4;
+    }
+    /* Tab for fx chain */
+    .fx-tab {
+      position: absolute;
+      top: 0; left: 50%;
+      transform: translate(-50%, -40px);
+      width: 80px; height: 20px;
+      background: #444;
+      border-radius: 8px 8px 0 0;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.8);
+      cursor: pointer;
+      color: white; font-size: 0.8rem;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 10;
+    }
+    .fx-tab::before {
+      content: "↓";
+    }
+    .fx-chain.hidden + .fx-tab::before {
+      content: "↑";
+    }
+  </style>
+</head>
+<body>
+  <!-- Sample Manager Container (left 20%) -->
+  <div class="sample-container">
+    <div class="sample-manager" id="sampleManager"></div>
+    <div class="sample-tab" id="sampleTab"></div>
+  </div>
+
+  <!-- Timeline (top-right) -->
+  <div class="timeline" id="timeline"></div>
+
+  <!-- FX Chain Container (bottom-right) -->
+  <div class="fxchain-container">
+    <div class="fx-chain" id="fxChain"></div>
+    <div class="fx-tab" id="fxTab"></div>
+  </div>
+
+  <script>
+    /* 
+      1) Toggling sample manager & fx chain
+      2) Dynamically changing body columns/rows so timeline expands fully
+      3) Animating timeline's bevel
+    */
+    const sampleManager = document.getElementById('sampleManager');
+    const sampleTab = document.getElementById('sampleTab');
+    const fxChain = document.getElementById('fxChain');
+    const fxTab = document.getElementById('fxTab');
+    const timeline = document.getElementById('timeline');
+    const bodyGrid = document.body.style; // We'll manipulate gridTemplateColumns/Rows
+
+    // Animate timeline box-shadow from normal to expanded
+    let timelineBevelProgress = 0; // 0 = normal, 1 = expanded
+    let timelineTargetProgress = 0;
+    let bevelStartTime = null;
+    const bevelDuration = 500;
+
+    function lerp(a, b, t) {
+      return a + (b - a) * t;
+    }
+    function updateTimelineBevel(progress) {
+      // Normal: inset 4px 4px 8px, expanded: 8px 8px 16px
+      const inset = lerp(4, 8, progress);
+      const blur = lerp(8, 16, progress);
+      const outerY = lerp(4, 6, progress);
+      const outerBlur = lerp(6, 10, progress);
+      const outerAlpha = lerp(0.7, 0.9, progress);
+      const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1), inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5), 0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
+      timeline.style.boxShadow = boxShadow;
+    }
+    function animateBevel(ts) {
+      if (!bevelStartTime) bevelStartTime = ts;
+      const elapsed = ts - bevelStartTime;
+      const t = Math.min(elapsed / bevelDuration, 1);
+      timelineBevelProgress = timelineBevelProgress + (timelineTargetProgress - timelineBevelProgress) * t;
+      updateTimelineBevel(timelineBevelProgress);
+      if (t < 1) requestAnimationFrame(animateBevel);
+      else {
+        timelineBevelProgress = timelineTargetProgress;
+        bevelStartTime = null;
+      }
+    }
+    function setTimelineBevel(target) {
+      timelineTargetProgress = target;
+      bevelStartTime = null;
+      requestAnimationFrame(animateBevel);
+    }
+
+    // Update body grid columns/rows to let timeline fill the space
+    function updateBodyGrid() {
+      const sampleHidden = sampleManager.classList.contains('hidden');
+      const fxHidden = fxChain.classList.contains('hidden');
+
+      // If sample is hidden => columns = 0% 100%, else 20% 80%
+      const newCols = sampleHidden ? '0% 100%' : '20% 80%';
+      // If fx is hidden => rows = 100% 0%, else 70% 30%
+      const newRows = fxHidden ? '100% 0%' : '70% 30%';
+
+      bodyGrid.gridTemplateColumns = newCols;
+      bodyGrid.gridTemplateRows = newRows;
+    }
+
+    function toggleSample() {
+      sampleManager.classList.toggle('hidden');
+      updateBodyGrid();
+      // If either panel is hidden => expand timeline bevel
+      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) {
+        setTimelineBevel(1);
+      } else {
+        setTimelineBevel(0);
+      }
+    }
+    function toggleFX() {
+      fxChain.classList.toggle('hidden');
+      updateBodyGrid();
+      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) {
+        setTimelineBevel(1);
+      } else {
+        setTimelineBevel(0);
+      }
+    }
+
+    sampleTab.addEventListener('click', toggleSample);
+    fxTab.addEventListener('click', toggleFX);
+
+    // Initialize
+    updateTimelineBevel(timelineBevelProgress);
+  </script>
+</body>
+</html>
