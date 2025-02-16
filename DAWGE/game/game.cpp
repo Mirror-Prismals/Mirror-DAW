@@ -21,6 +21,28 @@
 #include <numeric>
 #include <random>
 #include <ctime>
+#include <cstdlib>  // Make sure this is included for rand()
+
+// Number of stars and distance from the camera (adjust as needed)
+const int numStars = 1000;
+const float starDistance = 1000.0f;
+
+std::vector<glm::vec3> generateStarPositions(int count) {
+    std::vector<glm::vec3> stars;
+    stars.reserve(count);
+    for (int i = 0; i < count; i++) {
+        // Generate random spherical coordinates
+        float theta = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.14159f;
+        // Limit phi to the upper hemisphere so stars appear above
+        float phi = static_cast<float>(rand()) / RAND_MAX * 3.14159f * 0.5f;
+        // Convert spherical to Cartesian coordinates
+        float x = sin(phi) * cos(theta);
+        float y = cos(phi);
+        float z = sin(phi) * sin(theta);
+        stars.push_back(glm::vec3(x, y, z) * starDistance);
+    }
+    return stars;
+}
 
 // ---------------------- ChunkPos Definition and Hash Specialization ----------------------
 struct ChunkPos {
@@ -1635,6 +1657,56 @@ void toggleMapMode(GLFWwindow* window) {
 }
 
 // ---------------------- Shader Sources for Main Scene, Minimap, and Sun/Moon ----------------------
+// --- Star Vertex Shader ---
+const char* starVertexShaderSource = R"(
+// --- Star Vertex Shader (with independent seed) ---
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 view;
+uniform mat4 projection;
+
+// Pass a per–star seed to the fragment shader.
+out float starSeed;
+
+// A helper function that computes a pseudo–random value based on position.
+float computeSeed(vec3 pos) {
+    // Using a dot product with arbitrary constants and fract gives a seed in [0,1]
+    return fract(sin(dot(pos, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+}
+
+void main(){
+    gl_Position = projection * view * vec4(aPos, 1.0);
+    starSeed = computeSeed(aPos);
+    gl_PointSize = 2.0; // Adjust as desired
+}
+
+)";
+
+// --- Star Fragment Shader ---
+const char* starFragmentShaderSource = R"(
+// --- Star Fragment Shader with Twinkle ---
+
+#version 330 core
+in float starSeed;
+uniform float time; // Pass the current time in seconds from your render loop
+out vec4 FragColor;
+
+void main(){
+    // Create an independent oscillation for each star.
+    // Multiply time by a factor (e.g., 3.0) for speed, then add an offset based on starSeed.
+    float brightness = 0.8 + 0.2 * sin(time * 3.0 + starSeed * 10.0);
+    
+    // Optionally, use gl_PointCoord to give each point a circular shape:
+    float dist = length(gl_PointCoord - vec2(0.5));
+    if(dist > 0.5)
+        discard;
+    
+    FragColor = vec4(vec3(brightness), 1.0);
+}
+
+
+)";
 
 // --- Main Scene Vertex Shader (with normals, texcoords, instancing) ---
 const char* vertexShaderSource = R"(
@@ -2143,6 +2215,9 @@ void renderMinimap(GLuint minimapShaderProgram, GLuint minimapVAO, GLuint minima
 
 // ---------------------- Main Function ----------------------
 int main() {
+    // Generate star positions
+    std::vector<glm::vec3> starPositions = generateStarPositions(numStars);
+
     if (!glfwInit()) {
         std::cout << "Failed to initialize GLFW\n";
         return -1;
@@ -2216,6 +2291,17 @@ int main() {
     GLuint branchInstanceVBO, ancientBranchInstanceVBO;
     glGenBuffers(1, &branchInstanceVBO);
     glGenBuffers(1, &ancientBranchInstanceVBO);
+    // --- Star VAO and VBO Setup ---
+    GLuint starVAO, starVBO;
+    glGenVertexArrays(1, &starVAO);
+    glGenBuffers(1, &starVBO);
+
+    glBindVertexArray(starVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, starVBO);
+    glBufferData(GL_ARRAY_BUFFER, starPositions.size() * sizeof(glm::vec3), starPositions.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
 
     auto setupVAOFunc = [&](GLuint vao, bool instanced) {
         glBindVertexArray(vao);
@@ -2295,6 +2381,7 @@ int main() {
 
     // ---------------------- Main Render Loop ----------------------
     while (!glfwWindowShouldClose(window)) {
+
         float currentFrame = static_cast<float>(glfwGetTime());
         deltaTime = currentFrame - lastFrame;
         lastFrame = currentFrame;
@@ -2374,6 +2461,20 @@ int main() {
         glDrawArrays(GL_TRIANGLES, 0, 6);
         glBindVertexArray(0);
         glDepthMask(GL_TRUE);
+        // --- Render Stars ---
+        GLuint starShaderProgram = compileShaderProgram(starVertexShaderSource, starFragmentShaderSource);
+
+        glDepthMask(GL_FALSE); // So stars always render in the background
+        glUseProgram(starShaderProgram);
+        glUniform1f(glGetUniformLocation(starShaderProgram, "time"), currentFrame);
+
+        glUniformMatrix4fv(glGetUniformLocation(starShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(starShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+        glBindVertexArray(starVAO);
+        glDrawArrays(GL_POINTS, 0, starPositions.size());
+        glBindVertexArray(0);
+        glDepthMask(GL_TRUE);
+
 
         // --- Compute Sun and Moon positions based on real time ---
         glm::vec3 sunDirBillboard(0.0f), moonDirBillboard(0.0f);
