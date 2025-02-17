@@ -28,7 +28,7 @@
       --ruby-hover: #803030;
       --ruby-text:  #f0f0f0;
       --ruby-muted: #c0c0c0;
-      --ruby-disabled: #999;
+      --ruby-disabled: #99;
 
       --wire-red: #ff4444;
       --circle-red: #ff6666;
@@ -224,7 +224,7 @@
       content: "↑";
     }
 
-    /* Transport Node (excluded from pan/zoom) */
+    /* TRANSPORT NODE (excluded from pan/zoom) */
     .transport-node {
       position: absolute;
       top: 40px; left: 10px;
@@ -335,7 +335,7 @@
       background: var(--ruby-hover);
     }
 
-    /* Timeline context menu */
+    /* TIMELINE CONTEXT MENU */
     .timeline-menu {
       position: absolute; display: none;
       background: var(--ruby-bg);
@@ -474,9 +474,23 @@
     .note-header::after { content: "Note"; }
     .note-content { width: 100%; height: calc(100% - 24px); padding: 6px; overflow: auto; }
     .note-content[contenteditable="true"] { outline: none; }
+    /* Add input and output circles to the note node */
+    .note-node .io-circle {
+      position: absolute;
+    }
+    .note-node .io-circle.input {
+      left: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
+    .note-node .io-circle.output {
+      right: -6px;
+      top: 50%;
+      transform: translateY(-50%);
+    }
 
-    /* LOAD AUDIO NODE (Multi-slot version) */
-    .load-audio-node {
+    /* LOAD NODE (formerly LoadAudio Node, now renamed "Load") */
+    .load-node {
       position: absolute;
       width: 180px;
       background: #00000030;
@@ -489,7 +503,7 @@
       user-select: none;
       padding-bottom: 4px; /* space for plus button */
     }
-    .load-audio-header {
+    .load-header {
       padding: 4px 6px;
       border-bottom: 1px solid var(--ruby-border);
       background: var(--ruby-bg);
@@ -497,32 +511,32 @@
       border-radius: 6px 6px 0 0;
       cursor: grab;
     }
-    .load-audio-header::after {
-      content: "LoadAudio";
+    .load-header::after {
+      content: "Load";
     }
-    .load-audio-content {
+    .load-content {
       display: flex;
       flex-direction: column;
       gap: 6px;
       padding: 4px;
     }
-    .load-audio-slot {
+    .load-slot {
       display: flex;
       align-items: center;
       gap: 4px;
     }
-    .load-audio-info {
+    .load-info {
       font-size: 0.8rem;
       color: var(--ruby-muted);
     }
-    .load-audio-buttons button {
+    .load-buttons button {
       cursor: pointer;
     }
-    .load-audio-add-btn {
+    .load-add-btn {
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: #555;
+      background: #ff6666;  /* changed to red */
       color: #fff;
       display: flex;
       justify-content: center;
@@ -531,10 +545,10 @@
       font-size: 12px;
       margin: 4px auto 0 auto;
     }
-    .load-audio-add-btn:hover {
+    .load-add-btn:hover {
       background: var(--ruby-hover);
     }
-    .load-audio-outputs {
+    .load-outputs {
       position: absolute;
       right: 0;
       top: 50%;
@@ -543,6 +557,14 @@
       flex-direction: column;
       gap: 4px;
       margin-right: 4px;
+    }
+    /* Style for the handmade floppy disk icon */
+    .floppy-icon {
+      display: inline-block;
+      vertical-align: middle;
+    }
+    .floppy-icon svg {
+      display: block;
     }
 
     /* LANE NODE (multiple row inputs + row outputs) */
@@ -576,7 +598,8 @@
       position: relative;
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
-      background: #11111130;
+      /* Translucent dark red */
+      background: rgba(112,16,16,0.5);
       height: 60px;
       padding: 4px;
     }
@@ -586,7 +609,7 @@
     .lane-waveform-canvas {
       flex: 1;
       height: 100%;
-      background: #222;
+      background: rgba(112, 16, 16, 0.5);
       display: block;
       border-radius: 4px;
     }
@@ -608,14 +631,15 @@
       align-items: center;
       height: 30px;
       border-top: 1px solid var(--ruby-border);
-      background: #333;
+      /* Translucent dark red for add-row */
+      background: rgba(80,16,16,0.5);
       border-radius: 0 0 6px 6px;
     }
     .lane-add-button {
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: #555;
+      background: #ff6666;  /* changed to red */
       color: #fff;
       display: flex;
       justify-content: center;
@@ -679,7 +703,7 @@
       <ul class="submenu-list" id="addNodeSubmenu">
         <li data-nodetype="primitive">Primitive</li>
         <li data-nodetype="note">Note</li>
-        <li data-nodetype="loadaudio">LoadAudio</li>
+        <li data-nodetype="load">Load</li>
         <li data-nodetype="lane">Lane</li>
       </ul>
     </li>
@@ -854,7 +878,7 @@
       if (e.target.closest('.transport-node')) return;
       if (e.target.closest('.primitive-node')) return;
       if (e.target.closest('.note-node')) return;
-      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.load-node')) return;
       if (e.target.closest('.lane-node')) return;
       if (e.button !== 0) return;
       isTimelineDragging = true;
@@ -890,7 +914,7 @@
       if (e.target.closest('.transport-node')) return;
       if (e.target.closest('.primitive-node')) return;
       if (e.target.closest('.note-node')) return;
-      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.load-node')) return;
       if (e.target.closest('.lane-node')) return;
       e.preventDefault();
       if (e.deltaY < 0) zoom *= 1.1; else zoom *= 0.9;
@@ -960,7 +984,7 @@
       if (e.target.closest('.transport-node')) return;
       if (e.target.closest('.primitive-node')) return;
       if (e.target.closest('.note-node')) return;
-      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.load-node')) return;
       if (e.target.closest('.lane-node')) return;
       e.preventDefault();
       timelineMenu.style.display = 'block';
@@ -1015,7 +1039,7 @@
         const y = parseInt(timelineMenu.style.top) || 100;
         if (nodetype === 'primitive') createPrimitiveNode(x, y);
         else if (nodetype === 'note') createNoteNode(x, y);
-        else if (nodetype === 'loadaudio') createLoadAudioNode(x, y);
+        else if (nodetype === 'load') createLoadNode(x, y);
         else if (nodetype === 'lane') createLaneNode(x, y);
         timelineMenu.style.display = 'none';
       }
@@ -1297,6 +1321,27 @@
       noteContent.innerText = '(Type your note here...)';
       note.appendChild(noteContent);
 
+      // Add input and output circles
+      const inputCircle = document.createElement('div');
+      inputCircle.classList.add('io-circle', 'input');
+      inputCircle.dataset.port = "input";
+      inputCircle.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        startEphemeralWire(inputCircle, e.clientX, e.clientY);
+      });
+      note.appendChild(inputCircle);
+
+      const outputCircle = document.createElement('div');
+      outputCircle.classList.add('io-circle', 'output');
+      outputCircle.dataset.port = "output";
+      outputCircle.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        startEphemeralWire(outputCircle, e.clientX, e.clientY);
+      });
+      note.appendChild(outputCircle);
+
       nodeLayer.appendChild(note);
 
       // Draggable
@@ -1325,13 +1370,13 @@
       });
     }
 
-    // *** MULTI-SLOT LoadAudio Node (with multiple outputs) ***
-    function createLoadAudioNode(screenX, screenY) {
+    // *** MULTI-SLOT Load Node (formerly LoadAudio Node) ***
+    function createLoadNode(screenX, screenY) {
       const node = document.createElement('div');
-      node.className = 'load-audio-node';
+      node.className = 'load-node';
 
-      // We'll store all audio buffers in an array
-      node._audioBuffers = [];
+      // We'll store all loaded files in an array (unused in this demo)
+      node._loadedFiles = [];
 
       const { x, y } = screenToContainerCoords(screenX, screenY);
       node.style.left = x + 'px';
@@ -1339,63 +1384,61 @@
 
       // Header
       const header = document.createElement('div');
-      header.className = 'load-audio-header';
+      header.className = 'load-header';
       node.appendChild(header);
 
       // A container for the slot rows
       const content = document.createElement('div');
-      content.className = 'load-audio-content';
+      content.className = 'load-content';
       node.appendChild(content);
 
       // A container for the dynamic outputs (one per slot)
       const outputsContainer = document.createElement('div');
-      outputsContainer.className = 'load-audio-outputs';
+      outputsContainer.className = 'load-outputs';
       node.appendChild(outputsContainer);
 
-      function createAudioSlot() {
+      function createLoadSlot() {
         const slot = document.createElement('div');
-        slot.className = 'load-audio-slot';
+        slot.className = 'load-slot';
 
-        // Hidden file input
+        // Hidden file input (accepts any file)
         const fileInput = document.createElement('input');
         fileInput.type = 'file';
-        fileInput.accept = 'audio/*';
+        fileInput.removeAttribute('accept');
         fileInput.style.display = 'none';
         slot.appendChild(fileInput);
 
-        // Upload button
-        const btnUpload = document.createElement('button');
-        btnUpload.textContent = 'upload';
-        slot.appendChild(btnUpload);
+        // Floppy disk button with a handmade icon
+        const btnFloppy = document.createElement('button');
+        btnFloppy.style.background = 'none';
+        btnFloppy.style.border = 'none';
+        btnFloppy.style.padding = '0';
+        btnFloppy.style.cursor = 'pointer';
+        btnFloppy.innerHTML = `
+          <span class="floppy-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24">
+              <rect x="2" y="2" width="20" height="20" fill="#701010" stroke="#500000" stroke-width="2"/>
+              <rect x="6" y="2" width="12" height="6" fill="#ff6666"/>
+            </svg>
+          </span>
+        `;
+        slot.appendChild(btnFloppy);
 
         // Info text
         const info = document.createElement('div');
-        info.className = 'load-audio-info';
+        info.className = 'load-info';
         info.textContent = '(no file loaded)';
         slot.appendChild(info);
 
-        // Behavior
-        btnUpload.addEventListener('click', () => {
+        // Behavior: clicking the floppy button opens the file selector.
+        btnFloppy.addEventListener('click', () => {
           fileInput.click();
         });
         fileInput.addEventListener('change', async (e) => {
           if (!fileInput.files || fileInput.files.length < 1) return;
           const file = fileInput.files[0];
-          info.textContent = 'loading ' + file.name + ' ...';
-          try {
-            const arrayBuf = await file.arrayBuffer();
-            audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
-              // Store this buffer in node._audioBuffers
-              node._audioBuffers.push(audioBuf);
-              info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
-            }, (err) => {
-              console.error(err);
-              info.textContent = 'error decoding audio';
-            });
-          } catch (err) {
-            console.error(err);
-            info.textContent = 'error reading file';
-          }
+          info.textContent = 'selected: ' + file.name;
+          // No file processing is done per requirements.
         });
 
         return slot;
@@ -1404,7 +1447,7 @@
       // Create an initial slot + output
       function addSlotAndOutput() {
         // Create slot row
-        const newSlot = createAudioSlot();
+        const newSlot = createLoadSlot();
         content.appendChild(newSlot);
 
         // Create output circle
@@ -1429,7 +1472,7 @@
 
       // Plus button to add more slots (and outputs)
       const addBtn = document.createElement('div');
-      addBtn.className = 'load-audio-add-btn';
+      addBtn.className = 'load-add-btn';
       addBtn.textContent = '+';
       node.appendChild(addBtn);
 
