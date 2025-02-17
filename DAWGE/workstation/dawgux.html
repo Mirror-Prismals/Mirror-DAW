@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Oxblood DAW – Primitive Nodes</title>
+  <title>Node-based DAW – Wiggling Red Wires + Old Transport Layout</title>
   <style>
     :root {
       /* Oxblood background */
@@ -22,13 +22,18 @@
       --timeline-dark: 67, 22, 22;
       --inner-grid-opacity: 0.5;
 
-      /* Ruby-ish reds for transport, menus, popups, nodes */
+      /* Ruby-ish reds for UI, wires, node circles */
       --ruby-bg: #701010;
       --ruby-border: #500000;
       --ruby-hover: #803030;
       --ruby-text:  #f0f0f0;
       --ruby-muted: #c0c0c0;
       --ruby-disabled: #999;
+
+      /* We'll use these for wires & node circles (default colors) */
+      --wire-red: #ff4444; 
+      --circle-red: #ff6666;
+      --circle-red-border: #cc3333;
     }
     * {
       margin: 0; padding: 0; box-sizing: border-box;
@@ -45,15 +50,13 @@
         "sample fxchain";
       overflow: hidden;
       font-family: sans-serif;
-      user-select: none; /* helps reduce text selection while dragging */
+      user-select: none;
       color: var(--ruby-text);
     }
 
     /* SAMPLE MANAGER (left) */
     .sample-container {
-      grid-area: sample;
-      position: relative;
-      background: #222;
+      grid-area: sample; position: relative; background: #222;
     }
     .sample-manager {
       position: absolute; top: 0; left: 0;
@@ -62,7 +65,7 @@
       border-radius: 8px;
       box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
       display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 1.2rem;
+      font-size: 1.2rem; color: white;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .sample-manager::before {
@@ -72,16 +75,8 @@
       transform: translateX(calc(-100% + 20px));
       opacity: 0.4;
     }
-    .sample-manager.hidden::before {
-      position: absolute;
-      left: 0; top: 50%;
-      transform: translate(calc(-100% + 180px), -50%) rotate(90deg);
-      transform-origin: left center;
-      white-space: nowrap;
-    }
     .sample-tab {
-      position: absolute;
-      top: 0; left: 0;
+      position: absolute; top: 0; left: 0;
       width: 20px; height: 40px;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
@@ -105,12 +100,10 @@
 
     /* TIMELINE (top-right) */
     .timeline {
-      grid-area: timeline;
-      position: relative; /* so we can absolutely-position child elements */
+      grid-area: timeline; position: relative;
       background: var(--timeline-color);
       border-radius: 8px;
-      margin-left: 10px; 
-      margin-bottom: 10px;
+      margin-left: 10px; margin-bottom: 10px;
       box-shadow:
         inset 4px 4px 8px rgba(var(--bevel-dark-rgb),1),
         inset -4px -4px 8px rgba(var(--bevel-light-rgb),0.5),
@@ -119,7 +112,7 @@
       display: flex; align-items: center; justify-content: center;
       font-size: 1.2rem; color: white;
       cursor: grab;
-      /* Grid lines */
+      /* background grid lines */
       background-image: 
         linear-gradient(90deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
         linear-gradient(0deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
@@ -131,34 +124,32 @@
       content: "TIMELINE";
     }
 
-    /* We'll have a container for nodes and an SVG for wires */
+    /* Node layer & wires */
     .node-layer {
-      position: absolute; 
-      top: 0; left: 0;
+      position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
-      overflow: visible;
-      pointer-events: none; /* let clicks pass through to timeline (unless on a node) */
+      pointer-events: none; 
     }
-    /* We'll place an <svg> for ephemeral wires behind or above the nodes. 
-       pointer-events: none so it doesn't interfere with node dragging. */
     #connectionCanvas {
-      position: absolute;
-      top: 0; left: 0;
+      position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
       pointer-events: none;
-      overflow: visible;
-      z-index: 500; /* behind the node divs, or you can reorder if you like */
+      z-index: 500;
+    }
+    /* Permanent connection paths now use a gradient stroke (set via JS) */
+    .connection-path {
+      stroke-width: 3;
+      stroke-linecap: round;
+      fill: none;
+      stroke-dasharray: 10 5; /* dashed pattern */
     }
 
     /* FX CHAIN (bottom-right) */
     .fxchain-container {
-      grid-area: fxchain;
-      position: relative;
-      background: #222;
+      grid-area: fxchain; position: relative; background: #222;
     }
     .fx-chain {
-      position: absolute; 
-      top: 0; left: 0;
+      position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
       background: var(--fxchain-color);
       border-radius: 8px;
@@ -175,8 +166,7 @@
       opacity: 0.4;
     }
     .fx-tab {
-      position: absolute;
-      top: 0; left: 50%;
+      position: absolute; top: 0; left: 50%;
       transform: translate(-50%, -40px);
       width: 80px; height: 20px;
       background: var(--ruby-bg);
@@ -199,7 +189,7 @@
       content: "↑";
     }
 
-    /* TRANSPORT NODE (ruby style) */
+    /* === TRANSPORT NODE (Old Layout) === */
     .transport-node {
       position: absolute;
       top: 40px; left: 10px;
@@ -213,17 +203,21 @@
       min-height: 30px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.5);
       z-index: 999;
+      user-select: none;
     }
+    /* Leftmost "handle" with vertical dots */
     .transport-handle {
       cursor: grab;
       margin-right: 8px;
       color: var(--ruby-muted);
-      display: flex; align-items: center;
+      display: flex; align-items: center; justify-content: center;
       padding: 0 4px;
     }
     .transport-handle:hover {
       color: #fff;
     }
+
+    /* "Queue" button with play symbol, label, caret */
     .queue-button {
       position: relative;
       display: flex; align-items: center;
@@ -250,9 +244,9 @@
       color: var(--ruby-muted);
       font-size: 0.7rem;
     }
+    /* Dropdown for queue modes */
     .queue-dropdown {
-      position: absolute;
-      top: 100%; left: 0;
+      position: absolute; top: 100%; left: 0;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
@@ -272,6 +266,8 @@
     .queue-dropdown li:hover {
       background: var(--ruby-hover);
     }
+
+    /* Batch size spinner */
     .batch-size {
       display: flex; align-items: center;
       margin-right: 8px;
@@ -290,6 +286,8 @@
     .batch-size input[type="number"]::-webkit-outer-spin-button {
       margin: 0; -webkit-appearance: none;
     }
+
+    /* Stop (X) and Stop All (square) */
     .stop-btn,
     .stop-all-btn {
       background: var(--ruby-bg);
@@ -310,10 +308,9 @@
       background: var(--ruby-hover);
     }
 
-    /* TIMELINE CONTEXT MENU (Ruby Style) */
+    /* === TIMELINE CONTEXT MENU (Ruby Style) === */
     .timeline-menu {
-      position: absolute;
-      display: none;
+      position: absolute; display: none;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
@@ -322,7 +319,7 @@
       margin: 0;
       font-size: 0.9rem;
       color: var(--ruby-text);
-      z-index: 9999; /* above everything else */
+      z-index: 9999;
       box-shadow: 0 2px 8px rgba(0,0,0,0.7);
       min-width: 180px;
     }
@@ -336,8 +333,7 @@
       background: var(--ruby-hover);
     }
     .timeline-menu hr {
-      border: none;
-      border-top: 1px solid var(--ruby-border);
+      border: none; border-top: 1px solid var(--ruby-border);
       margin: 4px 0;
     }
     .timeline-menu li.disabled {
@@ -352,10 +348,8 @@
       color: var(--ruby-muted);
     }
     .submenu-list {
-      position: absolute;
-      top: 0; left: 100%;
-      margin-left: -1px;
-      display: none;
+      position: absolute; top: 0; left: 100%;
+      margin-left: -1px; display: none;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
@@ -365,9 +359,7 @@
       padding: 4px 0;
     }
     .submenu-list li {
-      padding: 6px 12px;
-      cursor: pointer;
-      color: var(--ruby-text);
+      padding: 6px 12px; cursor: pointer; color: var(--ruby-text);
     }
     .submenu-list li:hover {
       background: var(--ruby-hover);
@@ -376,12 +368,10 @@
       display: block;
     }
 
-    /* ADD NODE WINDOW (not changed from prior) */
+    /* "Add Node" Expandable Window */
     .add-node-panel {
-      position: absolute;
-      display: none;
-      top: 0; left: 0;
-      width: 240px;
+      position: absolute; top: 0; left: 0;
+      display: none; width: 240px;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 6px;
@@ -402,19 +392,14 @@
     }
     .add-node-buttons { display: flex; gap: 8px; }
     .add-node-btn {
-      background: transparent;
-      border: none;
-      color: var(--ruby-text);
-      cursor: pointer;
-      font-size: 1rem;
-      padding: 0;
+      background: transparent; border: none; color: var(--ruby-text);
+      cursor: pointer; font-size: 1rem; padding: 0;
     }
     .add-node-btn:hover {
       color: #fff;
     }
     .add-node-content {
-      padding: 8px;
-      display: block;
+      padding: 8px; display: block;
     }
     .node-type-item {
       padding: 4px 0; cursor: pointer;
@@ -423,20 +408,26 @@
       background: var(--ruby-hover);
     }
 
-    /* =============== PRIMITIVE NODE STYLING =============== */
+    /* Common style for IO circles */
+    .io-circle {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      box-shadow: 0 0 2px rgba(0,0,0,0.6);
+      background: var(--circle-red);
+      border: 1px solid var(--circle-red-border);
+      cursor: crosshair;
+    }
+
+    /* PRIMITIVE NODE */
     .primitive-node {
-      position: absolute;
-      top: 0; left: 0;
-      width: 140px; /* arbitrary */
-      background: #00000030; /* a dark translucent or ruby color, up to you */
+      position: absolute; top: 0; left: 0;
+      width: 140px;
+      background: #00000030;
       border: 1px solid var(--ruby-border);
       border-radius: 6px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-      font-size: 0.9rem;
-      color: var(--ruby-text);
-      /* pointer-events: auto so we can drag it, but we must set pointer-events: none on node-layer */
-      pointer-events: auto;
-      user-select: none;
+      font-size: 0.9rem; color: var(--ruby-text);
+      pointer-events: auto; user-select: none;
     }
     .primitive-header {
       padding: 4px 6px;
@@ -444,23 +435,114 @@
       font-weight: bold;
       background: var(--ruby-bg);
       border-radius: 6px 6px 0 0;
-      cursor: grab; /* drag the node by this area or anywhere not the output circle */
+      cursor: grab;
     }
-    .primitive-body {
-      padding: 6px;
-      /* Some placeholder text or instructions */
-    }
+    .primitive-body { padding: 6px; }
     .primitive-output {
-      position: absolute;
-      top: 50%;
-      right: 0;
+      position: absolute; top: 50%; right: 0;
       transform: translate(50%, -50%);
-      width: 12px; height: 12px;
-      background: #88ff88; /* output circle color, change if you like */
-      border-radius: 50%;
-      cursor: crosshair; /* indicates starting a wire */
-      box-shadow: 0 0 2px rgba(0,0,0,0.6);
-      border: 1px solid #66cc66;
+    }
+
+    /* NOTE NODE */
+    .note-node {
+      position: absolute; top: 0; left: 0;
+      width: 160px; height: 120px;
+      background: #00000030;
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem; color: var(--ruby-text);
+      pointer-events: auto; user-select: none;
+    }
+    .note-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      background: var(--ruby-bg);
+      font-weight: bold;
+      border-radius: 6px 6px 0 0;
+      cursor: grab;
+    }
+    .note-header::after {
+      content: "Note";
+    }
+    .note-content {
+      width: 100%; height: calc(100% - 24px);
+      padding: 6px; overflow: auto;
+    }
+    .note-content[contenteditable="true"] { outline: none; }
+
+    /* LOADAUDIO NODE */
+    .load-audio-node {
+      position: absolute; top: 0; left: 0;
+      width: 180px;
+      background: #00000030;
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem; color: var(--ruby-text);
+      pointer-events: auto; user-select: none;
+    }
+    .load-audio-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      background: var(--ruby-bg);
+      font-weight: bold;
+      border-radius: 6px 6px 0 0;
+      cursor: grab;
+    }
+    .load-audio-header::after {
+      content: "LoadAudio";
+    }
+    .load-audio-content {
+      padding: 6px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .load-audio-buttons {
+      display: flex; gap: 6px;
+    }
+    .load-audio-output {
+      position: absolute; top: 50%; right: 0;
+      transform: translate(50%, -50%);
+    }
+    .load-audio-info {
+      font-size: 0.8rem; color: var(--ruby-muted);
+    }
+
+    /* LANE NODE */
+    .lane-node {
+      position: absolute; top: 0; left: 0;
+      width: 400px; height: 100px;
+      background: #00000030;
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem; color: var(--ruby-text);
+      pointer-events: auto; user-select: none;
+    }
+    .lane-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      background: var(--ruby-bg);
+      font-weight: bold;
+      border-radius: 6px 6px 0 0;
+      cursor: grab;
+    }
+    .lane-header::after {
+      content: "Lane";
+    }
+    .lane-input {
+      position: absolute; top: 50%; left: 0;
+      transform: translate(-50%, -50%);
+    }
+    .lane-waveform-canvas {
+      width: 100%; height: calc(100% - 24px);
+      background: #222; /* behind the waveform */
+      display: block;
+    }
+    .lane-noinput {
+      position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      font-size: 0.8rem; color: var(--ruby-muted);
     }
   </style>
 </head>
@@ -473,13 +555,15 @@
 
   <!-- TIMELINE (top-right) -->
   <div class="timeline" id="timeline">
-    <!-- We'll add a node-layer for our primitive nodes, plus an SVG for ephemeral wires -->
     <svg id="connectionCanvas"></svg>
     <div class="node-layer" id="nodeLayer"></div>
 
-    <!-- Transport Node -->
+    <!-- Transport Node (old layout) -->
     <div class="transport-node" id="transportNode">
+      <!-- Leftmost handle with vertical dots -->
       <div class="transport-handle" id="transportHandle">&#8942;</div>
+
+      <!-- "Queue" button with a play symbol, label, caret -->
       <div class="queue-button" id="queueButton">
         <span class="queue-icon" id="queueIcon">></span>
         <span class="queue-label" id="queueLabel">Queue</span>
@@ -490,9 +574,13 @@
           <li data-icon="|>" data-label="Queue (On Change)">Queue (On Change)</li>
         </ul>
       </div>
+
+      <!-- Batch size spinner -->
       <div class="batch-size">
         <input type="number" value="1" min="1" id="batchInput" />
       </div>
+
+      <!-- Stop (X) and Stop All (■) buttons -->
       <button class="stop-btn" id="stopBtn">X</button>
       <button class="stop-all-btn" id="stopAllBtn">■</button>
     </div>
@@ -506,11 +594,14 @@
 
   <!-- TIMELINE CONTEXT MENU -->
   <ul class="timeline-menu" id="timelineMenu">
-    <li class="submenu" id="menuAddNode">
+    <li class="submenu">
       Add Node
       <span class="submenu-arrow">></span>
       <ul class="submenu-list" id="addNodeSubmenu">
         <li data-nodetype="primitive">Primitive</li>
+        <li data-nodetype="note">Note</li>
+        <li data-nodetype="loadaudio">LoadAudio</li>
+        <li data-nodetype="lane">Lane</li>
       </ul>
     </li>
     <li id="menuAddGroup">Add Group</li>
@@ -530,7 +621,7 @@
     </li>
   </ul>
 
-  <!-- "Add Node" Expandable Window (unchanged from previous example) -->
+  <!-- "Add Node" Expandable Window -->
   <div class="add-node-panel" id="addNodePanel">
     <div class="add-node-header" id="addNodeHeader">
       <span class="add-node-title">Add Node</span>
@@ -546,372 +637,755 @@
     </div>
   </div>
 
-  <script>
-    /* 
-      - Toggling sample manager & FX chain
-      - Animating timeline bevel
-      - Timeline dragging/zoom
-      - Transport node
-      - Right-click menu
-      - "Add Node" panel
-      - Now: "Primitive" nodes, each with a draggable body & an output circle for ephemeral wires
-    */
-    const sampleManager = document.getElementById('sampleManager');
-    const sampleTab = document.getElementById('sampleTab');
-    const fxChain = document.getElementById('fxChain');
-    const fxTab = document.getElementById('fxTab');
-    const timeline = document.getElementById('timeline');
-    const nodeLayer = document.getElementById('nodeLayer');
-    const connectionCanvas = document.getElementById('connectionCanvas');
-    const bodyGrid = document.body.style;
+<script>
+// ----------------------------------------------------------------
+// Minimal Node-based DAW UI with wiggling wires & new gradient feature.
+// Double-click any connection point (the small circles) to change its color.
+// When two nodes are connected the wire is drawn as a gradient from source to target.
 
-    /* 1) Toggling sample manager & FX chain, plus bevel animation */
-    let timelineBevelProgress = 0;
-    let timelineTargetProgress = 0;
-    let bevelStartTime = null;
-    const bevelDuration = 500;
-    function lerp(a, b, t) { return a + (b - a) * t; }
-    function updateTimelineBevel(progress) {
-      const inset = lerp(4, 8, progress);
-      const blur = lerp(8, 16, progress);
-      const outerY = lerp(4, 6, progress);
-      const outerBlur = lerp(6, 10, progress);
-      const outerAlpha = lerp(0.7, 0.9, progress);
-      const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1),
-                         inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5),
-                         0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
-      timeline.style.boxShadow = boxShadow;
+// Global AudioContext for decoding
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+// Query some main elements
+const sampleManager = document.getElementById('sampleManager');
+const sampleTab = document.getElementById('sampleTab');
+const fxChain = document.getElementById('fxChain');
+const fxTab = document.getElementById('fxTab');
+const timeline = document.getElementById('timeline');
+const nodeLayer = document.getElementById('nodeLayer');
+const connectionCanvas = document.getElementById('connectionCanvas');
+const timelineMenu = document.getElementById('timelineMenu');
+const addNodeSubmenu = document.getElementById('addNodeSubmenu');
+const addNodePanel = document.getElementById('addNodePanel');
+const addNodeHeader = document.getElementById('addNodeHeader');
+const addNodeContent = document.getElementById('addNodeContent');
+const addNodeToggle = document.getElementById('addNodeToggle');
+const addNodeClose = document.getElementById('addNodeClose');
+
+// Create an SVG <defs> element for our gradients
+const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+connectionCanvas.appendChild(svgDefs);
+
+// Global counter for gradient IDs
+let gradientIdCounter = 0;
+
+// We store connections in a global array
+// Each connection = { fromNode, fromPort, toNode, toPort, pathEl, gradientEl, gradientId }
+let connections = [];
+
+// Some code for toggling sample manager & fx chain, plus the timeline bevel animation
+let timelineBevelProgress = 0, timelineTargetProgress = 0, bevelStartTime = null;
+const bevelDuration = 500;
+function lerp(a, b, t) { return a + (b - a) * t; }
+function updateTimelineBevel(progress) {
+  const inset = lerp(4, 8, progress);
+  const blur = lerp(8, 16, progress);
+  const outerY = lerp(4, 6, progress);
+  const outerBlur = lerp(6, 10, progress);
+  const outerAlpha = lerp(0.7, 0.9, progress);
+  const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1),
+                   inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5),
+                   0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
+  timeline.style.boxShadow = boxShadow;
+}
+function animateBevel(ts) {
+  if (!bevelStartTime) bevelStartTime = ts;
+  const elapsed = ts - bevelStartTime;
+  const t = Math.min(elapsed / bevelDuration, 1);
+  timelineBevelProgress += (timelineTargetProgress - timelineBevelProgress) * t;
+  updateTimelineBevel(timelineBevelProgress);
+  if (t < 1) requestAnimationFrame(animateBevel);
+  else {
+    timelineBevelProgress = timelineTargetProgress;
+    bevelStartTime = null;
+  }
+}
+function setTimelineBevel(target) {
+  timelineTargetProgress = target;
+  bevelStartTime = null;
+  requestAnimationFrame(animateBevel);
+}
+function updateBodyGrid() {
+  const sampleHidden = sampleManager.classList.contains('hidden');
+  const fxHidden = fxChain.classList.contains('hidden');
+  const newCols = sampleHidden ? '0% 100%' : '20% 80%';
+  const newRows = fxHidden ? '100% 0%' : '70% 30%';
+  document.body.style.gridTemplateColumns = newCols;
+  document.body.style.gridTemplateRows = newRows;
+}
+sampleTab.addEventListener('click', () => {
+  sampleManager.classList.toggle('hidden');
+  updateBodyGrid();
+  if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
+  else setTimelineBevel(0);
+});
+fxTab.addEventListener('click', () => {
+  fxChain.classList.toggle('hidden');
+  updateBodyGrid();
+  if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
+  else setTimelineBevel(0);
+});
+updateTimelineBevel(timelineBevelProgress);
+
+// Timeline dragging & zoom
+let isTimelineDragging = false;
+let dragStart = { x: 0, y: 0 }, gridOffset = { x: 0, y: 0 };
+timeline.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.transport-node')) return;
+  if (e.target.closest('.primitive-node')) return;
+  if (e.target.closest('.note-node')) return;
+  if (e.target.closest('.load-audio-node')) return;
+  if (e.target.closest('.lane-node')) return;
+  if (e.button !== 0) return;
+  isTimelineDragging = true;
+  dragStart = { x: e.clientX, y: e.clientY };
+  timeline.style.cursor = 'grabbing';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!isTimelineDragging) return;
+  const dx = e.clientX - dragStart.x;
+  const dy = e.clientY - dragStart.y;
+  gridOffset.x += dx; gridOffset.y += dy;
+  timeline.style.backgroundPosition = `${gridOffset.x}px ${gridOffset.y}px`;
+  dragStart = { x: e.clientX, y: e.clientY };
+});
+document.addEventListener('mouseup', () => {
+  if (isTimelineDragging) {
+    isTimelineDragging = false;
+    timeline.style.cursor = 'grab';
+  }
+});
+let zoom = 1;
+function updateZoom() {
+  const outerSize = 100 * zoom;
+  const innerSize = 10 * zoom;
+  timeline.style.backgroundSize = `
+    ${outerSize}px ${outerSize}px,
+    ${outerSize}px ${outerSize}px,
+    ${innerSize}px ${innerSize}px,
+    ${innerSize}px ${innerSize}px`;
+}
+updateZoom();
+timeline.addEventListener('wheel', (e) => {
+  if (e.target.closest('.transport-node')) return;
+  if (e.target.closest('.primitive-node')) return;
+  if (e.target.closest('.note-node')) return;
+  if (e.target.closest('.load-audio-node')) return;
+  if (e.target.closest('.lane-node')) return;
+  e.preventDefault();
+  zoom *= (e.deltaY < 0) ? 1.1 : 0.9;
+  zoom = Math.max(0.1, Math.min(zoom, 10));
+  updateZoom();
+});
+
+// Transport node drag
+const transportNode = document.getElementById('transportNode');
+const transportHandle = document.getElementById('transportHandle');
+let isNodeDragging = false, nodeOffsetX = 0, nodeOffsetY = 0;
+transportHandle.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  isNodeDragging = true;
+  const rect = transportNode.getBoundingClientRect();
+  nodeOffsetX = e.clientX - rect.left;
+  nodeOffsetY = e.clientY - rect.top;
+  transportHandle.style.cursor = 'grabbing';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!isNodeDragging) return;
+  const timelineRect = timeline.getBoundingClientRect();
+  let newLeft = e.clientX - nodeOffsetX - timelineRect.left;
+  let newTop = e.clientY - nodeOffsetY - timelineRect.top;
+  transportNode.style.left = newLeft + 'px';
+  transportNode.style.top = newTop + 'px';
+});
+document.addEventListener('mouseup', () => {
+  if (isNodeDragging) {
+    isNodeDragging = false;
+    transportHandle.style.cursor = 'grab';
+  }
+});
+
+// Transport node sub controls
+const queueButton = document.getElementById('queueButton');
+const queueCaret = document.getElementById('queueCaret');
+const queueDropdown = document.getElementById('queueDropdown');
+const queueIcon = document.getElementById('queueIcon');
+const queueLabel = document.getElementById('queueLabel');
+queueCaret.addEventListener('click', (e) => {
+  e.stopPropagation();
+  queueDropdown.style.display = (queueDropdown.style.display === 'block') ? 'none' : 'block';
+});
+document.addEventListener('click', () => { queueDropdown.style.display = 'none'; });
+queueDropdown.addEventListener('click', (e) => {
+  if (e.target.tagName.toLowerCase() === 'li') {
+    queueIcon.textContent = e.target.getAttribute('data-icon');
+    queueLabel.textContent = e.target.getAttribute('data-label');
+    queueDropdown.style.display = 'none';
+  }
+});
+document.getElementById('stopBtn').addEventListener('click', () => {
+  console.log('Stop clicked!');
+});
+document.getElementById('stopAllBtn').addEventListener('click', () => {
+  console.log('Stop All clicked!');
+});
+document.getElementById('batchInput').addEventListener('change', (e) => {
+  console.log('Batch size changed to:', e.target.value);
+});
+
+// Timeline context menu
+timeline.addEventListener('contextmenu', (e) => {
+  if (e.target.closest('.transport-node')) return;
+  if (e.target.closest('.primitive-node')) return;
+  if (e.target.closest('.note-node')) return;
+  if (e.target.closest('.load-audio-node')) return;
+  if (e.target.closest('.lane-node')) return;
+  e.preventDefault();
+  timelineMenu.style.display = 'block';
+  timelineMenu.style.left = e.clientX + 'px';
+  timelineMenu.style.top = e.clientY + 'px';
+});
+document.addEventListener('click', () => { timelineMenu.style.display = 'none'; });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') timelineMenu.style.display = 'none';
+});
+document.getElementById('menuAddGroup').addEventListener('click', () => {
+  console.log('Add Group clicked');
+  timelineMenu.style.display = 'none';
+});
+
+// "Add Node" panel
+let isAddNodeDragging = false, addNodeOffsetX = 0, addNodeOffsetY = 0;
+let isAddNodeExpanded = true;
+addNodeHeader.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  isAddNodeDragging = true;
+  const rect = addNodePanel.getBoundingClientRect();
+  addNodeOffsetX = e.clientX - rect.left;
+  addNodeOffsetY = e.clientY - rect.top;
+  addNodeHeader.style.cursor = 'grabbing';
+});
+document.addEventListener('mousemove', (e) => {
+  if (!isAddNodeDragging) return;
+  addNodePanel.style.left = (e.clientX - addNodeOffsetX) + 'px';
+  addNodePanel.style.top = (e.clientY - addNodeOffsetY) + 'px';
+});
+document.addEventListener('mouseup', () => {
+  if (isAddNodeDragging) {
+    isAddNodeDragging = false;
+    addNodeHeader.style.cursor = 'grab';
+  }
+});
+addNodeToggle.addEventListener('click', () => {
+  isAddNodeExpanded = !isAddNodeExpanded;
+  addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
+  addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
+});
+addNodeClose.addEventListener('click', () => {
+  addNodePanel.style.display = 'none';
+});
+
+// Node creation from context menu
+addNodeSubmenu.addEventListener('click', (e) => {
+  if (e.target.tagName.toLowerCase() === 'li') {
+    const nodetype = e.target.getAttribute('data-nodetype');
+    const x = parseInt(timelineMenu.style.left) || 100;
+    const y = parseInt(timelineMenu.style.top) || 100;
+    if (nodetype === 'primitive') {
+      createPrimitiveNode(x, y);
+    } else if (nodetype === 'note') {
+      createNoteNode(x, y);
+    } else if (nodetype === 'loadaudio') {
+      createLoadAudioNode(x, y);
+    } else if (nodetype === 'lane') {
+      createLaneNode(x, y);
     }
-    function animateBevel(ts) {
-      if (!bevelStartTime) bevelStartTime = ts;
-      const elapsed = ts - bevelStartTime;
-      const t = Math.min(elapsed / bevelDuration, 1);
-      timelineBevelProgress = timelineBevelProgress + (timelineTargetProgress - timelineBevelProgress) * t;
-      updateTimelineBevel(timelineBevelProgress);
-      if (t < 1) requestAnimationFrame(animateBevel);
-      else {
-        timelineBevelProgress = timelineTargetProgress;
-        bevelStartTime = null;
-      }
+    timelineMenu.style.display = 'none';
+  }
+});
+
+// Ephemeral wire data
+let isDraggingWire = false;
+let wirePath = null; // ephemeral path element
+let wireFromNode = null; // starting node
+let wireFromPort = null;
+let wireStart = { x: 0, y: 0 };
+let ephemeralEnd = { x: 0, y: 0 }; // updated on mousemove
+
+// MOUSEMOVE: update ephemeral path
+document.addEventListener('mousemove', (e) => {
+  if (!isDraggingWire || !wirePath) return;
+  // Update ephemeral endpoint
+  ephemeralEnd = { x: e.clientX, y: e.clientY };
+  // Update the wiggly path
+  wirePath.setAttribute('d', makeWigglyPath(wireStart.x, wireStart.y, ephemeralEnd.x, ephemeralEnd.y, globalTime));
+});
+
+// MOUSEUP: on releasing an ephemeral wire
+document.addEventListener('mouseup', (e) => {
+  if (isDraggingWire) {
+    isDraggingWire = false;
+    // If there's an ephemeral gradient, remove it from defs
+    if (wirePath && wirePath.gradientEl) {
+      svgDefs.removeChild(wirePath.gradientEl);
     }
-    function setTimelineBevel(target) {
-      timelineTargetProgress = target;
-      bevelStartTime = null;
-      requestAnimationFrame(animateBevel);
-    }
-    function updateBodyGrid() {
-      const sampleHidden = sampleManager.classList.contains('hidden');
-      const fxHidden = fxChain.classList.contains('hidden');
-      const newCols = sampleHidden ? '0% 100%' : '20% 80%';
-      const newRows = fxHidden ? '100% 0%' : '70% 30%';
-      bodyGrid.gridTemplateColumns = newCols;
-      bodyGrid.gridTemplateRows = newRows;
-    }
-    function toggleSample() {
-      sampleManager.classList.toggle('hidden');
-      updateBodyGrid();
-      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) {
-        setTimelineBevel(1);
-      } else {
-        setTimelineBevel(0);
-      }
-    }
-    function toggleFX() {
-      fxChain.classList.toggle('hidden');
-      updateBodyGrid();
-      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) {
-        setTimelineBevel(1);
-      } else {
-        setTimelineBevel(0);
-      }
-    }
-    sampleTab.addEventListener('click', toggleSample);
-    fxTab.addEventListener('click', toggleFX);
-    updateTimelineBevel(timelineBevelProgress);
-
-    /* 2) Timeline drag & zoom */
-    let isTimelineDragging = false;
-    let dragStart = { x: 0, y: 0 };
-    let gridOffset = { x: 0, y: 0 };
-    timeline.addEventListener('mousedown', (e) => {
-      // If clicking on a node or transport, skip
-      const transportNode = document.getElementById('transportNode');
-      if (transportNode.contains(e.target)) return;
-      // If a primitive node or child was clicked, skip
-      if (e.target.closest('.primitive-node')) return;
-      if (e.button !== 0) return;
-      isTimelineDragging = true;
-      dragStart = { x: e.clientX, y: e.clientY };
-      timeline.style.cursor = 'grabbing';
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isTimelineDragging) return;
-      const dx = e.clientX - dragStart.x;
-      const dy = e.clientY - dragStart.y;
-      gridOffset.x += dx;
-      gridOffset.y += dy;
-      timeline.style.backgroundPosition = `${gridOffset.x}px ${gridOffset.y}px`;
-      dragStart = { x: e.clientX, y: e.clientY };
-    });
-    document.addEventListener('mouseup', () => {
-      if (isTimelineDragging) {
-        isTimelineDragging = false;
-        timeline.style.cursor = 'grab';
-      }
-    });
-    let zoom = 1;
-    function updateZoom() {
-      const outerSize = 100 * zoom;
-      const innerSize = 10 * zoom;
-      timeline.style.backgroundSize =
-        `${outerSize}px ${outerSize}px, ${outerSize}px ${outerSize}px, ` +
-        `${innerSize}px ${innerSize}px, ${innerSize}px ${innerSize}px`;
-    }
-    updateZoom();
-    timeline.addEventListener('wheel', (e) => {
-      // If over transport or node, skip zoom
-      const transportNode = document.getElementById('transportNode');
-      if (transportNode.contains(e.target)) return;
-      if (e.target.closest('.primitive-node')) return;
-      e.preventDefault();
-      zoom *= (e.deltaY < 0) ? 1.1 : 0.9;
-      zoom = Math.max(0.1, Math.min(zoom, 10));
-      updateZoom();
-    });
-
-    /* 3) Transport node logic (unchanged) */
-    const transportNode = document.getElementById('transportNode');
-    const transportHandle = document.getElementById('transportHandle');
-    let isNodeDragging = false, nodeOffsetX=0, nodeOffsetY=0;
-    transportHandle.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      isNodeDragging = true;
-      const rect = transportNode.getBoundingClientRect();
-      nodeOffsetX = e.clientX - rect.left;
-      nodeOffsetY = e.clientY - rect.top;
-      transportHandle.style.cursor = 'grabbing';
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isNodeDragging) return;
-      const timelineRect = timeline.getBoundingClientRect();
-      const newLeft = e.clientX - nodeOffsetX - timelineRect.left;
-      const newTop = e.clientY - nodeOffsetY - timelineRect.top;
-      transportNode.style.left = newLeft + 'px';
-      transportNode.style.top = newTop + 'px';
-    });
-    document.addEventListener('mouseup', () => {
-      if (isNodeDragging) {
-        isNodeDragging = false;
-        transportHandle.style.cursor = 'grab';
-      }
-    });
-    // Queue button & dropdown
-    const queueButton = document.getElementById('queueButton');
-    const queueCaret = document.getElementById('queueCaret');
-    const queueDropdown = document.getElementById('queueDropdown');
-    const queueIcon = document.getElementById('queueIcon');
-    const queueLabel = document.getElementById('queueLabel');
-    queueCaret.addEventListener('click', (e) => {
-      e.stopPropagation();
-      queueDropdown.style.display = (queueDropdown.style.display === 'block') ? 'none' : 'block';
-    });
-    document.addEventListener('click', () => {
-      queueDropdown.style.display = 'none';
-    });
-    queueDropdown.addEventListener('click', (e) => {
-      if (e.target.tagName.toLowerCase() === 'li') {
-        queueIcon.textContent = e.target.getAttribute('data-icon');
-        queueLabel.textContent = e.target.getAttribute('data-label');
-        queueDropdown.style.display = 'none';
-      }
-    });
-    // Stop & Stop All
-    document.getElementById('stopBtn').addEventListener('click', () => {
-      console.log('Stop clicked!');
-    });
-    document.getElementById('stopAllBtn').addEventListener('click', () => {
-      console.log('Stop All clicked!');
-    });
-    // Batch size
-    document.getElementById('batchInput').addEventListener('change', (e) => {
-      console.log('Batch size changed to:', e.target.value);
-    });
-
-    /* 4) Right-click context menu */
-    const timelineMenu = document.getElementById('timelineMenu');
-    timeline.addEventListener('contextmenu', (e) => {
-      // If right-clicking on the transport node or a primitive node, skip
-      if (transportNode.contains(e.target)) return;
-      if (e.target.closest('.primitive-node')) return;
-      e.preventDefault();
-      timelineMenu.style.display = 'block';
-      timelineMenu.style.left = e.clientX + 'px';
-      timelineMenu.style.top = e.clientY + 'px';
-    });
-    document.addEventListener('click', () => { timelineMenu.style.display = 'none'; });
-    document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') timelineMenu.style.display = 'none';
-    });
-
-    // Add Node > Primitive
-    const addNodeSubmenu = document.getElementById('addNodeSubmenu');
-    addNodeSubmenu.addEventListener('click', (e) => {
-      if (e.target.tagName.toLowerCase() === 'li') {
-        const nodetype = e.target.getAttribute('data-nodetype');
-        if (nodetype === 'primitive') {
-          // Create a new primitive node near the context menu
-          createPrimitiveNode(parseInt(timelineMenu.style.left), parseInt(timelineMenu.style.top));
-        }
-        timelineMenu.style.display = 'none';
-      }
-    });
-
-    // "Add Group", "Convert to Group Node", etc. remain placeholders
-    document.getElementById('menuAddGroup').addEventListener('click', () => {
-      console.log('Add Group clicked');
-      timelineMenu.style.display = 'none';
-    });
-
-    /* 5) "Add Node" window logic (unchanged) */
-    const addNodePanel = document.getElementById('addNodePanel');
-    const addNodeHeader = document.getElementById('addNodeHeader');
-    const addNodeContent = document.getElementById('addNodeContent');
-    const addNodeToggle = document.getElementById('addNodeToggle');
-    const addNodeClose = document.getElementById('addNodeClose');
-    let isAddNodeDragging = false, addNodeOffsetX=0, addNodeOffsetY=0;
-    let isAddNodeExpanded = true;
-    function openAddNodePanel(x, y) {
-      addNodePanel.style.display = 'block';
-      addNodePanel.style.left = x + 'px';
-      addNodePanel.style.top = y + 'px';
-    }
-    addNodeHeader.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      isAddNodeDragging = true;
-      const rect = addNodePanel.getBoundingClientRect();
-      addNodeOffsetX = e.clientX - rect.left;
-      addNodeOffsetY = e.clientY - rect.top;
-      addNodeHeader.style.cursor = 'grabbing';
-    });
-    document.addEventListener('mousemove', (e) => {
-      if (!isAddNodeDragging) return;
-      addNodePanel.style.left = (e.clientX - addNodeOffsetX) + 'px';
-      addNodePanel.style.top  = (e.clientY - addNodeOffsetY) + 'px';
-    });
-    document.addEventListener('mouseup', () => {
-      if (isAddNodeDragging) {
-        isAddNodeDragging = false;
-        addNodeHeader.style.cursor = 'grab';
-      }
-    });
-    addNodeToggle.addEventListener('click', () => {
-      isAddNodeExpanded = !isAddNodeExpanded;
-      addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
-      addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
-    });
-    addNodeClose.addEventListener('click', () => {
-      addNodePanel.style.display = 'none';
-    });
-
-    /* ==================== PRIMITIVE NODES ==================== */
-    // We'll store ephemeral wire info
-    let isDraggingWire = false;
-    let wireLine = null; // <line> element in the SVG
-    let wireStart = { x: 0, y: 0 };
-
-    function createPrimitiveNode(x, y) {
-      // Create the DOM element
-      const node = document.createElement('div');
-      node.className = 'primitive-node';
-      node.style.left = x + 'px';
-      node.style.top  = y + 'px';
-
-      // A header to show the name "Primitive" (drag by any part of node except the output circle)
-      const header = document.createElement('div');
-      header.className = 'primitive-header';
-      header.textContent = 'Primitive';
-      node.appendChild(header);
-
-      // A body area
-      const body = document.createElement('div');
-      body.className = 'primitive-body';
-      body.textContent = 'connect to widget input'; // placeholder text
-      node.appendChild(body);
-
-      // The output circle
-      const output = document.createElement('div');
-      output.className = 'primitive-output';
-      node.appendChild(output);
-
-      // Add to nodeLayer
-      nodeLayer.appendChild(node);
-
-      // DRAGGING THE NODE
-      let isNodeDrag = false;
-      let offsetX=0, offsetY=0;
-      node.addEventListener('mousedown', (e) => {
-        // If we clicked the output circle, we skip node-drag
-        if (e.target === output) return;
-        if (e.button !== 0) return;
-        isNodeDrag = true;
-        const rect = node.getBoundingClientRect();
-        offsetX = e.clientX - rect.left;
-        offsetY = e.clientY - rect.top;
-        // Bring this node to front (optional):
-        node.style.zIndex = '1000';
-      });
-      document.addEventListener('mousemove', (e2) => {
-        if (!isNodeDrag) return;
-        const timelineRect = timeline.getBoundingClientRect();
-        let newLeft = e2.clientX - offsetX - timelineRect.left;
-        let newTop  = e2.clientY - offsetY - timelineRect.top;
-        node.style.left = newLeft + 'px';
-        node.style.top  = newTop + 'px';
-      });
-      document.addEventListener('mouseup', () => {
-        isNodeDrag = false;
-        node.style.zIndex = 'auto';
-      });
-
-      // WIRE DRAGGING FROM OUTPUT
-      output.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        e.stopPropagation(); // prevent node drag
-        isDraggingWire = true;
-        // Create an SVG <line>
-        wireLine = document.createElementNS('http://www.w3.org/2000/svg','line');
-        wireLine.setAttribute('stroke','#88ff88');
-        wireLine.setAttribute('stroke-width','3');
-        wireLine.setAttribute('stroke-linecap','round');
-        // Find the center of output circle
-        const outRect = output.getBoundingClientRect();
-        const cx = outRect.left + outRect.width/2;
-        const cy = outRect.top + outRect.height/2;
-        wireStart = { x: cx, y: cy };
-        wireLine.setAttribute('x1', cx);
-        wireLine.setAttribute('y1', cy);
-        wireLine.setAttribute('x2', cx);
-        wireLine.setAttribute('y2', cy);
-        connectionCanvas.appendChild(wireLine);
-      });
-    }
-
-    // MOUSEMOVE for wire if isDraggingWire
-    document.addEventListener('mousemove', (e) => {
-      if (!isDraggingWire || !wireLine) return;
-      wireLine.setAttribute('x2', e.clientX);
-      wireLine.setAttribute('y2', e.clientY);
-    });
-    // On mouseup, we end the wire (for now, we remove it)
-    document.addEventListener('mouseup', (e) => {
-      if (isDraggingWire) {
-        isDraggingWire = false;
-        if (wireLine) {
-          connectionCanvas.removeChild(wireLine);
-          wireLine = null;
+    if (wirePath) {
+      // Check if dropped on an input connection point
+      const dropTarget = document.elementFromPoint(e.clientX, e.clientY);
+      if (dropTarget && dropTarget.classList.contains('io-circle')) {
+        const targetNode = dropTarget.closest('.lane-node');
+        if (targetNode) {
+          // Create a new permanent gradient for this connection
+          const permanentGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+          const gradId = "grad-" + (gradientIdCounter++);
+          permanentGrad.setAttribute("id", gradId);
+          permanentGrad.setAttribute("gradientUnits", "userSpaceOnUse");
+          // Stop 1 (source)
+          const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop1.setAttribute("offset", "0%");
+          let sourceCircle = wireFromNode.querySelector('.io-circle');
+          let sourceColor = getConnectionPointColor(sourceCircle);
+          stop1.setAttribute("stop-color", sourceColor);
+          // Stop 2 (target)
+          const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop2.setAttribute("offset", "100%");
+          let targetColor = getConnectionPointColor(dropTarget);
+          stop2.setAttribute("stop-color", targetColor);
+          permanentGrad.appendChild(stop1);
+          permanentGrad.appendChild(stop2);
+          svgDefs.appendChild(permanentGrad);
+          // Store the connection
+          connections.push({
+            fromNode: wireFromNode,
+            fromPort: 'output',
+            toNode: targetNode,
+            toPort: 'input',
+            pathEl: null,
+            gradientEl: permanentGrad,
+            gradientId: gradId
+          });
+          // Create permanent path element with gradient stroke
+          const finalPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          finalPath.classList.add('connection-path');
+          finalPath.setAttribute("stroke", "url(#" + gradId + ")");
+          connectionCanvas.appendChild(finalPath);
+          connections[connections.length - 1].pathEl = finalPath;
         }
       }
-    });
-  </script>
+      // Remove ephemeral wire element
+      connectionCanvas.removeChild(wirePath);
+      wirePath = null;
+    }
+  }
+});
+
+// Wiggly path generator (same as used for ephemeral wire)
+function makeWigglyPath(x1, y1, x2, y2, time) {
+  // Midpoint calculation with a sine–wave offset for wiggle effect
+  let mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+  const amplitude = 20;
+  const wave = Math.sin(time / 20) * amplitude;
+  my += wave;
+  return `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`;
+}
+
+// Start an ephemeral wire from an output connection point
+function startEphemeralWire(fromNode, fromPort, sx, sy) {
+  isDraggingWire = true;
+  wireFromNode = fromNode;
+  wireFromPort = fromPort;
+  wireStart = { x: sx, y: sy };
+  ephemeralEnd = { x: sx, y: sy };
+  // Create ephemeral path element
+  wirePath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+  wirePath.classList.add('connection-path');
+  connectionCanvas.appendChild(wirePath);
+  // Create an ephemeral gradient for the wire (both stops use the source color)
+  const tempGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+  tempGrad.setAttribute("id", "temp-grad");
+  tempGrad.setAttribute("gradientUnits", "userSpaceOnUse");
+  const stopA = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+  stopA.setAttribute("offset", "0%");
+  let srcColor = getConnectionPointColor(fromNode.querySelector('.io-circle'));
+  stopA.setAttribute("stop-color", srcColor);
+  const stopB = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+  stopB.setAttribute("offset", "100%");
+  stopB.setAttribute("stop-color", srcColor);
+  tempGrad.appendChild(stopA);
+  tempGrad.appendChild(stopB);
+  svgDefs.appendChild(tempGrad);
+  // Attach the gradient to the ephemeral wire
+  wirePath.gradientEl = tempGrad;
+  wirePath.setAttribute("stroke", "url(#temp-grad)");
+}
+
+// Utility: get the color for a connection point (from dataset or computed style)
+function getConnectionPointColor(el) {
+  return el.dataset.connColor || window.getComputedStyle(el).backgroundColor;
+}
+
+// Animation loop: update wires and, if applicable, draw waveforms
+let globalTime = 0;
+function updateScene() {
+  globalTime++;
+
+  // 1) Update permanent connections' paths and their gradients
+  connections.forEach(conn => {
+    if (!conn.pathEl) return;
+    // Get source circle center
+    const outCircle = conn.fromNode.querySelector('.io-circle');
+    if (!outCircle) return;
+    const r1 = outCircle.getBoundingClientRect();
+    const x1 = r1.left + r1.width / 2, y1 = r1.top + r1.height / 2;
+    // Get target circle center
+    const inCircle = conn.toNode.querySelector('.io-circle');
+    if (!inCircle) return;
+    const r2 = inCircle.getBoundingClientRect();
+    const x2 = r2.left + r2.width / 2, y2 = r2.top + r2.height / 2;
+    // Update the wiggly path
+    conn.pathEl.setAttribute('d', makeWigglyPath(x1, y1, x2, y2, globalTime));
+    // Animate dash offset for the "energy" effect
+    const offset = (globalTime * 2) % 100;
+    conn.pathEl.style.strokeDashoffset = offset;
+    // Update the gradient coordinates and colors
+    if (conn.gradientEl) {
+      conn.gradientEl.setAttribute("x1", x1);
+      conn.gradientEl.setAttribute("y1", y1);
+      conn.gradientEl.setAttribute("x2", x2);
+      conn.gradientEl.setAttribute("y2", y2);
+      conn.gradientEl.firstChild.setAttribute("stop-color", getConnectionPointColor(outCircle));
+      conn.gradientEl.lastChild.setAttribute("stop-color", getConnectionPointColor(inCircle));
+    }
+  });
+
+  // 2) Update ephemeral wire's gradient if one is active
+  if (isDraggingWire && wirePath && wirePath.gradientEl) {
+    wirePath.gradientEl.setAttribute("x1", wireStart.x);
+    wirePath.gradientEl.setAttribute("y1", wireStart.y);
+    wirePath.gradientEl.setAttribute("x2", ephemeralEnd.x);
+    wirePath.gradientEl.setAttribute("y2", ephemeralEnd.y);
+    let sourceCircle = wireFromNode.querySelector('.io-circle');
+    let srcColor = getConnectionPointColor(sourceCircle);
+    wirePath.gradientEl.firstChild.setAttribute("stop-color", srcColor);
+    wirePath.gradientEl.lastChild.setAttribute("stop-color", srcColor);
+  }
+
+  // 3) Draw waveform for lane nodes if connected to a LoadAudio node with an audio buffer
+  connections.forEach(conn => {
+    if (!conn.toNode) return;
+    if (!conn.toNode.classList.contains('lane-node')) return;
+    if (!conn.fromNode.classList.contains('load-audio-node')) return;
+    const lane = conn.toNode;
+    const loadAudio = conn.fromNode;
+    const canvas = lane.querySelector('canvas');
+    const noInput = lane.querySelector('.lane-noinput');
+    if (loadAudio._audioBuffer) {
+      noInput.style.display = 'none';
+      const rect = canvas.getBoundingClientRect();
+      if (canvas.width !== Math.floor(rect.width) || canvas.height !== Math.floor(rect.height)) {
+        canvas.width = Math.floor(rect.width);
+        canvas.height = Math.floor(rect.height);
+      }
+      drawWaveform(canvas, loadAudio._audioBuffer);
+    } else {
+      noInput.style.display = 'block';
+      noInput.textContent = 'No audio loaded';
+    }
+  });
+
+  requestAnimationFrame(updateScene);
+}
+requestAnimationFrame(updateScene);
+
+// Draw waveform on a canvas from an AudioBuffer (channel 0)
+function drawWaveform(canvas, audioBuffer) {
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(0, 0, w, h);
+  const chanData = audioBuffer.getChannelData(0);
+  const step = Math.floor(chanData.length / w);
+  const center = h / 2;
+  ctx.strokeStyle = '#ffbbbb';
+  ctx.beginPath();
+  ctx.moveTo(0, center);
+  for (let i = 0; i < w; i++) {
+    const idx = i * step;
+    const sampleVal = chanData[idx] || 0;
+    const y = center + sampleVal * center;
+    ctx.lineTo(i, y);
+  }
+  ctx.stroke();
+}
+
+// Node creation functions
+function createPrimitiveNode(x, y) {
+  const node = document.createElement('div');
+  node.className = 'primitive-node';
+  node.style.left = x + 'px'; node.style.top = y + 'px';
+
+  const header = document.createElement('div');
+  header.className = 'primitive-header';
+  header.textContent = 'Primitive';
+  node.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'primitive-body';
+  body.textContent = '(No real audio logic)';
+  node.appendChild(body);
+
+  const output = document.createElement('div');
+  output.classList.add('primitive-output', 'io-circle');
+  node.appendChild(output);
+
+  nodeLayer.appendChild(node);
+
+  // Drag the node
+  let isNodeDrag = false, offX = 0, offY = 0;
+  header.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isNodeDrag = true;
+    const rect = node.getBoundingClientRect();
+    offX = e.clientX - rect.left; offY = e.clientY - rect.top;
+    node.style.zIndex = '1000';
+  });
+  document.addEventListener('mousemove', (e2) => {
+    if (!isNodeDrag) return;
+    const timelineRect = timeline.getBoundingClientRect();
+    node.style.left = (e2.clientX - offX - timelineRect.left) + 'px';
+    node.style.top = (e2.clientY - offY - timelineRect.top) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    isNodeDrag = false;
+    node.style.zIndex = 'auto';
+  });
+
+  // Start an ephemeral wire on mousedown on the output circle
+  output.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    startEphemeralWire(node, 'output', e.clientX, e.clientY);
+  });
+}
+
+function createNoteNode(x, y) {
+  const note = document.createElement('div');
+  note.className = 'note-node';
+  note.style.left = x + 'px'; note.style.top = y + 'px';
+
+  const noteHeader = document.createElement('div');
+  noteHeader.className = 'note-header';
+  note.appendChild(noteHeader);
+
+  const noteContent = document.createElement('div');
+  noteContent.className = 'note-content';
+  noteContent.contentEditable = 'true';
+  noteContent.innerText = '(Type your note here...)';
+  note.appendChild(noteContent);
+
+  nodeLayer.appendChild(note);
+
+  // Drag the note
+  let isNoteDrag = false, dx = 0, dy = 0;
+  noteHeader.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isNoteDrag = true;
+    const rect = note.getBoundingClientRect();
+    dx = e.clientX - rect.left; dy = e.clientY - rect.top;
+    note.style.zIndex = '1000';
+  });
+  document.addEventListener('mousemove', (e2) => {
+    if (!isNoteDrag) return;
+    const timelineRect = timeline.getBoundingClientRect();
+    note.style.left = (e2.clientX - dx - timelineRect.left) + 'px';
+    note.style.top = (e2.clientY - dy - timelineRect.top) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    isNoteDrag = false;
+    note.style.zIndex = 'auto';
+  });
+}
+
+function createLoadAudioNode(x, y) {
+  const node = document.createElement('div');
+  node.className = 'load-audio-node';
+  node.style.left = x + 'px'; node.style.top = y + 'px';
+
+  node._audioBuffer = null; // to store decoded audio data
+
+  const header = document.createElement('div');
+  header.className = 'load-audio-header';
+  node.appendChild(header);
+
+  // Output circle for connections
+  const output = document.createElement('div');
+  output.classList.add('load-audio-output', 'io-circle');
+  node.appendChild(output);
+
+  // Content area
+  const content = document.createElement('div');
+  content.className = 'load-audio-content';
+  node.appendChild(content);
+
+  const btnRow = document.createElement('div');
+  btnRow.className = 'load-audio-buttons';
+
+  // Hidden file input for audio upload
+  const fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.accept = 'audio/*';
+  fileInput.style.display = 'none';
+  node.appendChild(fileInput);
+
+  const btnUpload = document.createElement('button');
+  btnUpload.textContent = 'upload';
+  btnUpload.style.cursor = 'pointer';
+  btnUpload.addEventListener('click', () => {
+    fileInput.click();
+  });
+  fileInput.addEventListener('change', async (e) => {
+    if (!fileInput.files || fileInput.files.length < 1) return;
+    const file = fileInput.files[0];
+    info.textContent = 'loading ' + file.name + ' ...';
+    try {
+      const arrayBuf = await file.arrayBuffer();
+      audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
+        node._audioBuffer = audioBuf;
+        info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
+      }, (err) => {
+        console.error(err);
+        info.textContent = 'error decoding audio';
+      });
+    } catch (err) {
+      console.error(err);
+      info.textContent = 'error reading file';
+    }
+  });
+
+  btnRow.appendChild(btnUpload);
+  content.appendChild(btnRow);
+
+  const info = document.createElement('div');
+  info.className = 'load-audio-info';
+  info.textContent = '(no file loaded)';
+  content.appendChild(info);
+
+  nodeLayer.appendChild(node);
+
+  // Draggable
+  let isDrag = false, offX = 0, offY = 0;
+  header.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isDrag = true;
+    const rect = node.getBoundingClientRect();
+    offX = e.clientX - rect.left; offY = e.clientY - rect.top;
+    node.style.zIndex = '1000';
+  });
+  document.addEventListener('mousemove', (e2) => {
+    if (!isDrag) return;
+    const timelineRect = timeline.getBoundingClientRect();
+    node.style.left = (e2.clientX - offX - timelineRect.left) + 'px';
+    node.style.top = (e2.clientY - offY - timelineRect.top) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    isDrag = false;
+    node.style.zIndex = 'auto';
+  });
+
+  // Start an ephemeral wire from the output circle
+  output.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    startEphemeralWire(node, 'output', e.clientX, e.clientY);
+  });
+}
+
+function createLaneNode(x, y) {
+  const lane = document.createElement('div');
+  lane.className = 'lane-node';
+  lane.style.left = x + 'px'; lane.style.top = y + 'px';
+
+  const header = document.createElement('div');
+  header.className = 'lane-header';
+  lane.appendChild(header);
+
+  // Input circle for lane
+  const inputCircle = document.createElement('div');
+  inputCircle.classList.add('lane-input', 'io-circle');
+  lane.appendChild(inputCircle);
+
+  // Canvas for drawing waveform
+  const canvas = document.createElement('canvas');
+  canvas.className = 'lane-waveform-canvas';
+  lane.appendChild(canvas);
+
+  const noInput = document.createElement('div');
+  noInput.className = 'lane-noinput';
+  noInput.textContent = 'No input connected';
+  lane.appendChild(noInput);
+
+  nodeLayer.appendChild(lane);
+
+  // Draggable lane
+  let isDrag = false, dx = 0, dy = 0;
+  header.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
+    isDrag = true;
+    const rect = lane.getBoundingClientRect();
+    dx = e.clientX - rect.left; dy = e.clientY - rect.top;
+    lane.style.zIndex = '1000';
+  });
+  document.addEventListener('mousemove', (e2) => {
+    if (!isDrag) return;
+    const timelineRect = timeline.getBoundingClientRect();
+    lane.style.left = (e2.clientX - dx - timelineRect.left) + 'px';
+    lane.style.top = (e2.clientY - dy - timelineRect.top) + 'px';
+  });
+  document.addEventListener('mouseup', () => {
+    isDrag = false;
+    lane.style.zIndex = 'auto';
+  });
+}
+
+// Utility: Convert "rgb(...)" string to hex string.
+function rgbToHex(rgb) {
+  const result = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(rgb);
+  return result ? "#" +
+    ("0" + parseInt(result[1], 10).toString(16)).slice(-2) +
+    ("0" + parseInt(result[2], 10).toString(16)).slice(-2) +
+    ("0" + parseInt(result[3], 10).toString(16)).slice(-2) : rgb;
+}
+
+// Utility: Shade a color by a percentage (negative darkens)
+function shadeColor(color, percent) {
+  let num = parseInt(color.slice(1), 16),
+      amt = Math.round(2.55 * percent),
+      R = (num >> 16) + amt,
+      G = (num >> 8 & 0x00FF) + amt,
+      B = (num & 0x0000FF) + amt;
+  return "#" + (
+    0x1000000 +
+    (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
+    (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
+    (B < 255 ? (B < 1 ? 0 : B) : 255)
+  ).toString(16).slice(1);
+}
+
+// Allow users to change connection point colors via double-click
+document.addEventListener('dblclick', function(e) {
+  if (e.target.classList.contains('io-circle')) {
+    let current = e.target.dataset.connColor || window.getComputedStyle(e.target).backgroundColor;
+    if (current.startsWith("rgb")) { current = rgbToHex(current); }
+    let input = prompt("Enter 6-digit hex color (without #)", current.replace("#", ""));
+    if (input && /^[0-9A-Fa-f]{6}$/.test(input)) {
+      input = "#" + input;
+      e.target.dataset.connColor = input;
+      e.target.style.backgroundColor = input;
+      e.target.style.borderColor = shadeColor(input, -20);
+    }
+  }
+});
+</script>
 </body>
 </html>
