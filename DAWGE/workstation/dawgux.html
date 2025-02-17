@@ -33,6 +33,13 @@
       --wire-red: #ff4444;
       --circle-red: #ff6666;
       --circle-red-border: #cc3333;
+
+      /* New variables for lane node and load node floppy disk */
+      --lane-bg: rgba(112,16,16,0.5);
+      --lane-add-bg: rgba(80,16,16,0.5);
+      --lane-add-button: #ff6666;
+      --floppy-fill: #ff6666;
+      --floppy-stroke: #500000;
     }
     * {
       margin: 0; padding: 0; box-sizing: border-box;
@@ -334,6 +341,20 @@
     .stop-all-btn:hover {
       background: var(--ruby-hover);
     }
+    /* Color toggle button */
+    .color-toggle-btn {
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
+      border-radius: 4px;
+      color: var(--ruby-text);
+      padding: 4px 8px;
+      margin-left: 8px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    .color-toggle-btn:hover {
+      background: var(--ruby-hover);
+    }
 
     /* TIMELINE CONTEXT MENU */
     .timeline-menu {
@@ -536,7 +557,7 @@
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: #ff6666;  /* changed to red */
+      background: var(--floppy-fill);
       color: #fff;
       display: flex;
       justify-content: center;
@@ -558,7 +579,7 @@
       gap: 4px;
       margin-right: 4px;
     }
-    /* Style for the handmade floppy disk icon */
+    /* Floppy disk icon styling */
     .floppy-icon {
       display: inline-block;
       vertical-align: middle;
@@ -570,7 +591,7 @@
     /* LANE NODE (multiple row inputs + row outputs) */
     .lane-node {
       position: absolute;
-      background: #00000030;
+      background: var(--lane-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 6px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.5);
@@ -598,8 +619,7 @@
       position: relative;
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
-      /* Translucent dark red */
-      background: rgba(112,16,16,0.5);
+      background: var(--lane-bg);
       height: 60px;
       padding: 4px;
     }
@@ -609,7 +629,7 @@
     .lane-waveform-canvas {
       flex: 1;
       height: 100%;
-      background: rgba(112, 16, 16, 0.5);
+      background: var(--lane-bg);
       display: block;
       border-radius: 4px;
     }
@@ -631,15 +651,14 @@
       align-items: center;
       height: 30px;
       border-top: 1px solid var(--ruby-border);
-      /* Translucent dark red for add-row */
-      background: rgba(80,16,16,0.5);
+      background: var(--lane-add-bg);
       border-radius: 0 0 6px 6px;
     }
     .lane-add-button {
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: #ff6666;  /* changed to red */
+      background: var(--lane-add-button);
       color: #fff;
       display: flex;
       justify-content: center;
@@ -686,6 +705,8 @@
       </div>
       <button class="stop-btn" id="stopBtn">X</button>
       <button class="stop-all-btn" id="stopAllBtn">■</button>
+      <!-- NEW: Color Toggle Button -->
+      <button class="color-toggle-btn" id="colorToggle">Toggle Color</button>
     </div>
   </div>
 
@@ -762,6 +783,9 @@
     const addNodeContent = document.getElementById('add-nodeContent');
     const addNodeToggle = document.getElementById('addNodeToggle');
     const addNodeClose = document.getElementById('addNodeClose');
+
+    // New color toggle reference
+    const colorToggle = document.getElementById('colorToggle');
 
     const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
     connectionCanvas.appendChild(svgDefs);
@@ -1417,8 +1441,8 @@
         btnFloppy.innerHTML = `
           <span class="floppy-icon">
             <svg width="16" height="16" viewBox="0 0 24 24">
-              <rect x="2" y="2" width="20" height="20" fill="#701010" stroke="#500000" stroke-width="2"/>
-              <rect x="6" y="2" width="12" height="6" fill="#ff6666"/>
+              <rect x="2" y="2" width="20" height="20" style="fill: var(--floppy-stroke); stroke: var(--floppy-stroke); stroke-width: 2"/>
+              <rect x="6" y="2" width="12" height="6" style="fill: var(--floppy-fill);"/>
             </svg>
           </span>
         `;
@@ -1438,7 +1462,6 @@
           if (!fileInput.files || fileInput.files.length < 1) return;
           const file = fileInput.files[0];
           info.textContent = 'selected: ' + file.name;
-          // No file processing is done per requirements.
         });
 
         return slot;
@@ -1446,7 +1469,6 @@
 
       // Create an initial slot + output
       function addSlotAndOutput() {
-        // Create slot row
         const newSlot = createLoadSlot();
         content.appendChild(newSlot);
 
@@ -1505,7 +1527,6 @@
         }
       });
 
-      // Finally, add the node to the DOM
       nodeLayer.appendChild(node);
     }
 
@@ -1528,7 +1549,6 @@
       rowsContainer.className = 'lane-rows-container';
       lane.appendChild(rowsContainer);
 
-      // Function to create a lane row
       function createLaneRow() {
         const row = document.createElement('div');
         row.className = 'lane-row';
@@ -1537,7 +1557,6 @@
         const inputCircle = document.createElement('div');
         inputCircle.classList.add('lane-input', 'io-circle');
         inputCircle.dataset.port = "input";
-        // Default color
         inputCircle.dataset.connColor = "#80ff80";
         inputCircle.style.backgroundColor = "#80ff80";
         inputCircle.style.borderColor = shadeColor("#80ff80", -20);
@@ -1563,7 +1582,6 @@
         const outputCircle = document.createElement('div');
         outputCircle.classList.add('lane-output', 'io-circle');
         outputCircle.dataset.port = "output";
-        // Default color
         outputCircle.dataset.connColor = "#ff6666";
         outputCircle.style.backgroundColor = "#ff6666";
         outputCircle.style.borderColor = shadeColor("#ff6666", -20);
@@ -1577,7 +1595,6 @@
         return row;
       }
 
-      // Add initial lane row
       rowsContainer.appendChild(createLaneRow());
 
       // Add row button
@@ -1643,19 +1660,93 @@
         ("0" + parseInt(result[3], 10).toString(16)).slice(-2)
         : rgb;
     }
+
+    // --- Updated shadeColor: supports 6 or 8-digit hex and preserves transparency ---
     function shadeColor(color, percent) {
-      let num = parseInt(color.slice(1), 16),
-          amt = Math.round(2.55 * percent),
-          R = (num >> 16) + amt,
-          G = (num >> 8 & 0x00FF) + amt,
-          B = (num & 0x0000FF) + amt;
-      return "#" + (
-        0x1000000 +
-        (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
-        (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
-        (B < 255 ? (B < 1 ? 0 : B) : 255)
-      ).toString(16).slice(-6);
+      color = color.replace("#", "");
+      if (color.length === 6) {
+        let num = parseInt(color, 16);
+        let amt = Math.round(2.55 * percent);
+        let R = (num >> 16) + amt;
+        let G = (num >> 8 & 0x00FF) + amt;
+        let B = (num & 0x0000FF) + amt;
+        R = Math.max(Math.min(255, R), 0);
+        G = Math.max(Math.min(255, G), 0);
+        B = Math.max(Math.min(255, B), 0);
+        return "#" + ((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
+      } else if (color.length === 8) {
+        // Extract RGBA components
+        let R = parseInt(color.slice(0, 2), 16);
+        let G = parseInt(color.slice(2, 4), 16);
+        let B = parseInt(color.slice(4, 6), 16);
+        let A = parseInt(color.slice(6, 8), 16);
+        let amt = Math.round(2.55 * percent);
+        R = Math.max(Math.min(255, R + amt), 0);
+        G = Math.max(Math.min(255, G + amt), 0);
+        B = Math.max(Math.min(255, B + amt), 0);
+        let alpha = (A / 255).toFixed(2);
+        return `rgba(${R}, ${G}, ${B}, ${alpha})`;
+      }
+      return color;
     }
+
+    // --- Helper: convert hex to rgba string with specified alpha ---
+    function hexToRgbA(hex, alpha) {
+      hex = hex.replace("#", "");
+      if (hex.length === 6) {
+        let r = parseInt(hex.slice(0, 2), 16);
+        let g = parseInt(hex.slice(2, 4), 16);
+        let b = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      } else if (hex.length === 8) {
+        let r = parseInt(hex.slice(0, 2), 16);
+        let g = parseInt(hex.slice(2, 4), 16);
+        let b = parseInt(hex.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+      }
+      return hex;
+    }
+
+    // --- Theme generator: now uses full hex (with alpha if provided) ---
+    function generateTheme(baseColor) {
+      return {
+        '--bg-center': shadeColor(baseColor, -30),
+        '--bg-edge': shadeColor(baseColor, -50),
+        '--sample-color': shadeColor(baseColor, 10),
+        '--timeline-color': shadeColor(baseColor, 0),
+        '--fxchain-color': shadeColor(baseColor, -10),
+        '--ruby-bg': baseColor,
+        '--ruby-border': shadeColor(baseColor, -20),
+        '--ruby-hover': shadeColor(baseColor, 20),
+        '--ruby-text': '#f0f0f0',
+        '--ruby-muted': '#c0c0c0',
+        '--ruby-disabled': '#99',
+        '--lane-bg': hexToRgbA(baseColor, 0.5),
+        '--lane-add-bg': hexToRgbA(shadeColor(baseColor, -10), 0.5),
+        '--lane-add-button': shadeColor(baseColor, 0),
+        '--floppy-fill': shadeColor(baseColor, 0),
+        '--floppy-stroke': shadeColor(baseColor, -20)
+      };
+    }
+
+    // --- THEME TOGGLE: preserves transparency in the theme variables, leaves wires untouched ---
+    colorToggle.addEventListener('click', () => {
+      const input = prompt("Enter 8-digit hex color (e.g. FF66CCFF) for background:");
+      if (!input) return;
+      const hex = input.replace("#", "");
+      if (!/^[0-9A-Fa-f]{8}$/.test(hex)) {
+        alert("Please enter exactly 8 hex digits!");
+        return;
+      }
+      const baseColor = "#" + hex;
+      const themeVars = generateTheme(baseColor);
+      for (const [key, value] of Object.entries(themeVars)) {
+        document.documentElement.style.setProperty(key, value);
+      }
+    });
+
+    // Init
+    updatePanZoomTransform();
 
     // *** SPARKLE EFFECT ***
     function createSparkle() {
@@ -1669,9 +1760,6 @@
       }, 1000);
     }
     setInterval(createSparkle, 200);
-
-    // Init
-    updatePanZoomTransform();
   </script>
 </body>
 </html>
