@@ -1302,37 +1302,42 @@
       });
     }
 
-    function createLaneNode(screenX, screenY) {
-    const lane = document.createElement('div');
-    lane.className = 'lane-node';
-    lane.style.width = '400px'; 
-    lane.style.height = '100px';
-    const { x, y } = screenToContainerCoords(screenX, screenY);
-    lane.style.left = x + 'px';
-    lane.style.top = y + 'px';
-    
-    const header = document.createElement('div');
-    header.className = 'lane-header';
-    lane.appendChild(header);
-    
-    const inputCircle = document.createElement('div');
-    inputCircle.classList.add('lane-input', 'io-circle');
-    // Set default lane input color to green (#80ff80)
-    inputCircle.dataset.connColor = "#80ff80";
-    inputCircle.style.backgroundColor = "#80ff80";
-    inputCircle.style.borderColor = shadeColor("#80ff80", -20);
-    lane.appendChild(inputCircle);
-    
-    const canvas = document.createElement('canvas');
-    canvas.className = 'lane-waveform-canvas';
-    lane.appendChild(canvas);
-    
-    const noInput = document.createElement('div');
-    noInput.className = 'lane-noinput';
-    noInput.textContent = 'No input connected';
-    lane.appendChild(noInput);
-    
-    nodeLayer.appendChild(lane);
+function createLaneNode(screenX, screenY) {
+  const lane = document.createElement('div');
+  lane.className = 'lane-node';
+  lane.style.width = '400px'; 
+  lane.style.height = '100px';
+  const { x, y } = screenToContainerCoords(screenX, screenY);
+  lane.style.left = x + 'px';
+  lane.style.top = y + 'px';
+
+  const header = document.createElement('div');
+  header.className = 'lane-header';
+  lane.appendChild(header);
+
+  const inputCircle = document.createElement('div');
+  inputCircle.classList.add('lane-input', 'io-circle');
+  // Set default lane input color to green (#80ff80)
+  inputCircle.dataset.connColor = "#80ff80";
+  inputCircle.style.backgroundColor = "#80ff80";
+  inputCircle.style.borderColor = shadeColor("#80ff80", -20);
+  lane.appendChild(inputCircle);
+
+  const canvas = document.createElement('canvas');
+  canvas.className = 'lane-waveform-canvas';
+  lane.appendChild(canvas);
+
+  const noInput = document.createElement('div');
+  noInput.className = 'lane-noinput';
+  noInput.textContent = 'No input connected';
+  lane.appendChild(noInput);
+
+  nodeLayer.appendChild(lane);
+      const noInput = document.createElement('div');
+      noInput.className = 'lane-noinput';
+      noInput.textContent = 'No input connected';
+      lane.appendChild(noInput);
+      nodeLayer.appendChild(lane);
       let isDrag = false, offsetX = 0, offsetY = 0;
       header.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
