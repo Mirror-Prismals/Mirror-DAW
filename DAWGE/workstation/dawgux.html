@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Oxblood DAW – Full Hide + Timeline Expansion + Transport</title>
+  <title>Oxblood DAW + Transport + Right-Click Menu + Add Node Window (Ruby Tabs)</title>
   <style>
     :root {
       /* Oxblood background */
       --bg-center: #400000;
       --bg-edge: #100000;
 
-      /* Distinct panel colors */
+      /* Panel colors */
       --sample-color: #803030;   /* sample manager */
       --timeline-color: #602020; /* timeline */
       --fxchain-color: #701010;  /* fx chain */
@@ -25,7 +25,16 @@
       /* Inner grid color: a shade between timeline-dark and the timeline base.
          (Outer grid lines use opacity 0.7; here we use 0.5 so the inner lines are lighter.) */
       --inner-grid-opacity: 0.5;
+
+      /* Ruby-ish reds for the transport, menus, popups, and now the tabs */
+      --ruby-bg: #701010;
+      --ruby-border: #500000;
+      --ruby-hover: #803030;
+      --ruby-text:  #f0f0f0;
+      --ruby-muted: #c0c0c0;
+      --ruby-disabled: #999;
     }
+
     * {
       margin: 0;
       padding: 0;
@@ -46,6 +55,7 @@
       overflow: hidden;
       font-family: sans-serif;
       user-select: none; /* prevents accidental text selection during dragging */
+      color: var(--ruby-text);
     }
 
     /* Sample Manager (left column) */
@@ -67,8 +77,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: white;
       font-size: 1.2rem;
+      color: white;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .sample-manager::before {
@@ -86,22 +96,28 @@
       transform-origin: left center;
       white-space: nowrap;
     }
+
+    /* Sample tab – now using Ruby colors */
     .sample-tab {
       position: absolute;
       top: 0;
       left: 0;
       width: 20px;
       height: 40px;
-      background: #444;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 0 0 8px 0;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.8);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.7);
       cursor: pointer;
-      color: white;
+      color: var(--ruby-text);
       font-size: 0.8rem;
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 10;
+    }
+    .sample-tab:hover {
+      background: var(--ruby-hover);
     }
     .sample-tab::before {
       content: "←";
@@ -126,9 +142,9 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: white;
       font-size: 1.2rem;
       cursor: grab;
+      color: white;
       /* Grid lines for timeline */
       background-image: 
         linear-gradient(90deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
@@ -161,8 +177,8 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: white;
       font-size: 1.2rem;
+      color: white;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .fx-chain::before {
@@ -172,6 +188,8 @@
       transform: translateY(100%);
       opacity: 0.4;
     }
+
+    /* FX tab – now using Ruby colors */
     .fx-tab {
       position: absolute;
       top: 0;
@@ -179,16 +197,20 @@
       transform: translate(-50%, -40px);
       width: 80px;
       height: 20px;
-      background: #444;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 8px 8px 0 0;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.8);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.7);
       cursor: pointer;
-      color: white;
+      color: var(--ruby-text);
       font-size: 0.8rem;
       display: flex;
       align-items: center;
       justify-content: center;
       z-index: 10;
+    }
+    .fx-tab:hover {
+      background: var(--ruby-hover);
     }
     .fx-tab::before {
       content: "↓";
@@ -197,38 +219,34 @@
       content: "↑";
     }
 
-    /* =============== Transport Node Styles =============== */
+    /* =============== Transport Node (Ruby Style) =============== */
     .transport-node {
       position: absolute;
-      /* Instead of centering horizontally, we left-align it (with a small margin)
-         so the left vertical dots remain at the left edge of the node. */
+      /* Left-align inside timeline */
       top: 40px;
       left: 10px;
-      /* No horizontal translate */
       display: flex;
       align-items: center;
-      background: #2B2B2B;
-      border: 1px solid #444;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 6px;
       padding: 4px 6px;
-      color: #ccc;
+      color: var(--ruby-text);
       font-size: 0.9rem;
       min-height: 30px;
       box-shadow: 0 2px 4px rgba(0,0,0,0.5);
       z-index: 999;
     }
-
-    /* Drag handle for the transport node */
     .transport-handle {
       cursor: grab;
       margin-right: 8px;
-      color: #888;
+      color: var(--ruby-muted);
       display: flex;
       align-items: center;
       padding: 0 4px;
     }
     .transport-handle:hover {
-      color: #bbb;
+      color: #fff;
     }
 
     /* Queue button (icon, label, caret) */
@@ -236,15 +254,15 @@
       position: relative;
       display: flex;
       align-items: center;
-      background: #3B3B3B;
-      border: 1px solid #555;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 4px;
       padding: 0 8px;
       margin-right: 8px;
       cursor: pointer;
     }
     .queue-button:hover {
-      background: #4A4A4A;
+      background: var(--ruby-hover);
     }
     .queue-icon {
       margin-right: 4px;
@@ -252,21 +270,19 @@
       font-weight: bold;
     }
     .queue-label {
-      color: #ddd;
+      color: var(--ruby-text);
       margin-right: 4px;
     }
     .caret {
-      color: #ccc;
+      color: var(--ruby-muted);
       font-size: 0.7rem;
     }
-
-    /* Dropdown menu */
     .queue-dropdown {
       position: absolute;
       top: 100%;
       left: 0;
-      background: #3B3B3B;
-      border: 1px solid #555;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 4px;
       list-style: none;
       padding: 4px 0;
@@ -274,14 +290,15 @@
       min-width: 120px;
       display: none;
       z-index: 999;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.7);
     }
     .queue-dropdown li {
       padding: 4px 8px;
       cursor: pointer;
-      color: #ddd;
+      color: var(--ruby-text);
     }
     .queue-dropdown li:hover {
-      background: #4A4A4A;
+      background: var(--ruby-hover);
     }
 
     /* Batch size spinner */
@@ -292,10 +309,10 @@
     }
     .batch-size input[type="number"] {
       width: 50px;
-      background: #3B3B3B;
-      border: 1px solid #555;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 4px;
-      color: #ddd;
+      color: var(--ruby-text);
       text-align: center;
       outline: none;
       -moz-appearance: textfield;
@@ -309,10 +326,10 @@
     /* Stop and Stop All buttons */
     .stop-btn,
     .stop-all-btn {
-      background: #3B3B3B;
-      border: 1px solid #555;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
       border-radius: 4px;
-      color: #ddd;
+      color: var(--ruby-text);
       width: 28px;
       height: 28px;
       display: flex;
@@ -327,12 +344,134 @@
     }
     .stop-btn:hover,
     .stop-all-btn:hover {
-      background: #4A4A4A;
+      background: var(--ruby-hover);
+    }
+
+    /* ===================== TIMELINE CONTEXT MENU (Ruby Style) ===================== */
+    .timeline-menu {
+      position: absolute;
+      display: none;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
+      border-radius: 4px;
+      list-style: none;
+      padding: 4px 0;
+      margin: 0;
+      font-size: 0.9rem;
+      color: var(--ruby-text);
+      z-index: 9999; /* above everything else */
+      box-shadow: 0 2px 8px rgba(0,0,0,0.7);
+      min-width: 180px;
+    }
+    .timeline-menu li {
+      padding: 6px 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between; /* to position sub-menu arrow on right */
+    }
+    .timeline-menu li:hover {
+      background: var(--ruby-hover);
+    }
+    .timeline-menu hr {
+      border: none;
+      border-top: 1px solid var(--ruby-border);
+      margin: 4px 0;
+    }
+    .timeline-menu li.disabled {
+      color: var(--ruby-disabled);
+      cursor: default;
+    }
+    .timeline-menu li.disabled:hover {
+      background: none; /* no highlight */
+    }
+    .timeline-menu .submenu-arrow {
+      margin-left: 8px;
+      color: var(--ruby-muted);
+    }
+    /* Submenu placeholder styling */
+    .submenu-list {
+      position: absolute;
+      top: 0;
+      left: 100%;
+      margin-left: -1px;
+      padding-left: 0;
+      display: none;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
+      border-radius: 4px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.7);
+      list-style: none;
+      min-width: 150px;
+    }
+    .submenu-list li {
+      padding: 6px 12px;
+      cursor: pointer;
+      color: var(--ruby-text);
+    }
+    .submenu-list li:hover {
+      background: var(--ruby-hover);
+    }
+    .timeline-menu li.submenu:hover .submenu-list {
+      display: block;
+    }
+
+    /* ========== Add Node Window (Ruby style) ========== */
+    .add-node-panel {
+      position: absolute;
+      display: none; /* hidden by default */
+      top: 0; left: 0;
+      width: 240px;
+      background: var(--ruby-bg);
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.7);
+      z-index: 10000; /* on top of everything else */
+      font-size: 0.9rem;
+      color: var(--ruby-text);
+    }
+    .add-node-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: var(--ruby-hover);
+      padding: 6px 8px;
+      border-radius: 6px 6px 0 0;
+      cursor: grab; /* can drag the window by the header */
+    }
+    .add-node-title {
+      font-weight: bold;
+    }
+    .add-node-buttons {
+      display: flex;
+      gap: 8px;
+    }
+    .add-node-btn {
+      background: transparent;
+      border: none;
+      color: var(--ruby-text);
+      cursor: pointer;
+      font-size: 1rem;
+      padding: 0;
+    }
+    .add-node-btn:hover {
+      color: #fff;
+    }
+    .add-node-content {
+      padding: 8px;
+      display: block; /* toggled by expand/collapse */
+    }
+    .node-type-item {
+      padding: 4px 0;
+      cursor: pointer;
+    }
+    .node-type-item:hover {
+      background: var(--ruby-hover);
     }
   </style>
 </head>
 <body>
-  <!-- Sample Manager (left column) -->
+  <!-- Sample Manager (left 20%) -->
   <div class="sample-container">
     <div class="sample-manager" id="sampleManager"></div>
     <div class="sample-tab" id="sampleTab"></div>
@@ -340,13 +479,11 @@
 
   <!-- Timeline (top-right) -->
   <div class="timeline" id="timeline">
-    <!-- Transport Node (floating inside timeline) -->
+    <!-- Transport Node (ruby style) -->
     <div class="transport-node" id="transportNode">
-      <!-- Drag handle with vertical dots -->
-      <div class="transport-handle" id="transportHandle">
-        &#8942;
-      </div>
-      <!-- Queue button with dropdown -->
+      <!-- Drag handle -->
+      <div class="transport-handle" id="transportHandle">&#8942;</div>
+      <!-- Queue button -->
       <div class="queue-button" id="queueButton">
         <span class="queue-icon" id="queueIcon">></span>
         <span class="queue-label" id="queueLabel">Queue</span>
@@ -361,7 +498,7 @@
       <div class="batch-size">
         <input type="number" value="1" min="1" id="batchInput" />
       </div>
-      <!-- Stop and Stop All buttons -->
+      <!-- Stop (X) and Stop All (square) -->
       <button class="stop-btn" id="stopBtn">X</button>
       <button class="stop-all-btn" id="stopAllBtn">■</button>
     </div>
@@ -373,6 +510,45 @@
     <div class="fx-tab" id="fxTab"></div>
   </div>
 
+  <!-- Timeline context menu -->
+  <ul class="timeline-menu" id="timelineMenu">
+    <li id="menuAddNode">Add Node</li>
+    <li id="menuAddGroup">Add Group</li>
+    <hr />
+    <li class="disabled" id="menuConvertGroup">Convert to Group Node</li>
+    <li class="disabled" id="menuManageGroups">Manage Group Nodes</li>
+    <li class="disabled" id="menuAddGroupSelected">Add Group For Selected Nodes</li>
+    <hr />
+    <li id="menuSaveTemplate">Save Selected as Template</li>
+    <li class="submenu" id="menuNodeTemplates">
+      Node Templates
+      <span class="submenu-arrow">></span>
+      <!-- Submenu placeholder -->
+      <ul class="submenu-list">
+        <li>Template 1</li>
+        <li>Template 2</li>
+      </ul>
+    </li>
+  </ul>
+
+  <!-- "Add Node" Expandable Window -->
+  <div class="add-node-panel" id="addNodePanel">
+    <div class="add-node-header" id="addNodeHeader">
+      <span class="add-node-title">Add Node</span>
+      <div class="add-node-buttons">
+        <!-- Expand/collapse arrow -->
+        <button class="add-node-btn" id="addNodeToggle">▼</button>
+        <!-- Close button -->
+        <button class="add-node-btn" id="addNodeClose">✕</button>
+      </div>
+    </div>
+    <div class="add-node-content" id="addNodeContent">
+      <div class="node-type-item">Node Type A</div>
+      <div class="node-type-item">Node Type B</div>
+      <div class="node-type-item">Node Type C</div>
+    </div>
+  </div>
+
   <script>
     /* 
       1) Toggling sample manager & FX chain
@@ -381,6 +557,8 @@
       4) Infinite grid dragging on timeline
       5) Zoom in/out for the grid
       6) Transport node (drag handle, queue dropdown, etc.)
+      7) Right-click context menu on timeline
+      8) "Add Node" window
     */
     const sampleManager = document.getElementById('sampleManager');
     const sampleTab = document.getElementById('sampleTab');
@@ -461,6 +639,7 @@
     let dragStart = { x: 0, y: 0 };
     let gridOffset = { x: 0, y: 0 };
     timeline.addEventListener('mousedown', (e) => {
+      // If we clicked inside the transport node or one of its children, do NOT drag the grid
       const transportNode = document.getElementById('transportNode');
       if (transportNode.contains(e.target)) return;
       if (e.button !== 0) return;
@@ -504,7 +683,6 @@
     });
 
     /* ================= TRANSPORT NODE LOGIC ================= */
-    // A) Draggable node (left-aligned)
     const transportNode = document.getElementById('transportNode');
     const transportHandle = document.getElementById('transportHandle');
     let isNodeDragging = false;
@@ -521,8 +699,8 @@
     document.addEventListener('mousemove', (e) => {
       if (!isNodeDragging) return;
       const timelineRect = timeline.getBoundingClientRect();
-      let newLeft = e.clientX - nodeOffsetX - timelineRect.left;
-      let newTop = e.clientY - nodeOffsetY - timelineRect.top;
+      const newLeft = e.clientX - nodeOffsetX - timelineRect.left;
+      const newTop = e.clientY - nodeOffsetY - timelineRect.top;
       transportNode.style.left = newLeft + 'px';
       transportNode.style.top = newTop + 'px';
     });
@@ -533,7 +711,7 @@
       }
     });
 
-    // B) Queue button & dropdown
+    // Queue button & dropdown
     const queueButton = document.getElementById('queueButton');
     const queueCaret = document.getElementById('queueCaret');
     const queueDropdown = document.getElementById('queueDropdown');
@@ -556,7 +734,7 @@
       }
     });
 
-    // C) Stop & Stop All buttons
+    // Stop & Stop All
     const stopBtn = document.getElementById('stopBtn');
     const stopAllBtn = document.getElementById('stopAllBtn');
     stopBtn.addEventListener('click', () => {
@@ -566,10 +744,96 @@
       console.log('Stop All clicked!');
     });
 
-    // D) Batch size input
+    // Batch size
     const batchInput = document.getElementById('batchInput');
     batchInput.addEventListener('change', () => {
       console.log('Batch size changed to:', batchInput.value);
+    });
+
+
+    /* =============== TIMELINE CONTEXT MENU =============== */
+    const timelineMenu = document.getElementById('timelineMenu');
+
+    timeline.addEventListener('contextmenu', (e) => {
+      // If right-clicking on the transport node, skip
+      if (transportNode.contains(e.target)) return;
+      e.preventDefault();
+      timelineMenu.style.display = 'block';
+      timelineMenu.style.left = e.clientX + 'px';
+      timelineMenu.style.top = e.clientY + 'px';
+    });
+
+    document.addEventListener('click', () => {
+      timelineMenu.style.display = 'none';
+    });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        timelineMenu.style.display = 'none';
+      }
+    });
+
+    // Example handlers for context menu items
+    const menuAddNode = document.getElementById('menuAddNode');
+    menuAddNode.addEventListener('click', (e) => {
+      console.log('Add Node clicked');
+      timelineMenu.style.display = 'none';
+      openAddNodePanel(e.clientX, e.clientY);
+    });
+    document.getElementById('menuAddGroup').addEventListener('click', () => {
+      console.log('Add Group clicked');
+      timelineMenu.style.display = 'none';
+    });
+    // ... etc.
+
+    /* =============== ADD NODE WINDOW =============== */
+    const addNodePanel = document.getElementById('addNodePanel');
+    const addNodeHeader = document.getElementById('addNodeHeader');
+    const addNodeContent = document.getElementById('addNodeContent');
+    const addNodeToggle = document.getElementById('addNodeToggle');
+    const addNodeClose = document.getElementById('addNodeClose');
+
+    let isAddNodeDragging = false;
+    let addNodeOffsetX = 0;
+    let addNodeOffsetY = 0;
+    let isAddNodeExpanded = true; // tracks expand/collapse
+
+    function openAddNodePanel(x, y) {
+      addNodePanel.style.display = 'block';
+      addNodePanel.style.left = x + 'px';
+      addNodePanel.style.top = y + 'px';
+    }
+
+    // Drag the panel by its header
+    addNodeHeader.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isAddNodeDragging = true;
+      const rect = addNodePanel.getBoundingClientRect();
+      addNodeOffsetX = e.clientX - rect.left;
+      addNodeOffsetY = e.clientY - rect.top;
+      addNodeHeader.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isAddNodeDragging) return;
+      addNodePanel.style.left = (e.clientX - addNodeOffsetX) + 'px';
+      addNodePanel.style.top  = (e.clientY - addNodeOffsetY) + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isAddNodeDragging) {
+        isAddNodeDragging = false;
+        addNodeHeader.style.cursor = 'grab';
+      }
+    });
+
+    // Expand/Collapse
+    addNodeToggle.addEventListener('click', () => {
+      isAddNodeExpanded = !isAddNodeExpanded;
+      addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
+      addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
+    });
+
+    // Close
+    addNodeClose.addEventListener('click', () => {
+      addNodePanel.style.display = 'none';
     });
   </script>
 </body>
