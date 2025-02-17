@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Node-based DAW – Aurora Borealis Wires with Zoom/ Pan</title>
+  <title>Node-based DAW – Multiple Outputs Fix</title>
   <style>
     :root {
       /* Oxblood background */
@@ -83,8 +83,6 @@
       100% { opacity: 0; transform: scale(0.5); }
     }
 
-    /* The rest of your original CSS remains unchanged */
-
     /* SAMPLE MANAGER (left) */
     .sample-container {
       grid-area: sample; position: relative; background: #222;
@@ -136,18 +134,18 @@
       border-radius: 8px;
       margin-left: 10px; margin-bottom: 10px;
       box-shadow:
-        inset 4px 4px 8px rgba(var(--bevel-dark-rgb),1),
-        inset -4px -4px 8px rgba(var(--bevel-light-rgb),0.5),
+        inset 4px 4px 8px rgba(0,0,0,1),
+        inset -4px -4px 8px rgba(255,255,255,0.5),
         0 4px 6px rgba(0,0,0,0.7);
       transition: margin 0.5s ease, box-shadow 0.5s ease;
       display: flex; align-items: center; justify-content: center;
       font-size: 1.2rem; color: white;
       cursor: grab;
       background-image:
-        linear-gradient(90deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
-        linear-gradient(0deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px),
-        linear-gradient(0deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px);
+        linear-gradient(90deg, rgba(67,22,22,0.7) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(67,22,22,0.7) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(67,22,22,0.5) 0.5px, transparent 0.5px),
+        linear-gradient(0deg, rgba(67,22,22,0.5) 0.5px, transparent 0.5px);
       background-position: 0 0;
     }
     .timeline::before {
@@ -449,9 +447,7 @@
 
     /* PRIMITIVE NODE */
     .primitive-node,
-    .note-node,
-    .load-audio-node,
-    .lane-node {
+    .note-node {
       position: absolute;
       background: #00000030;
       border: 1px solid var(--ruby-border);
@@ -461,9 +457,7 @@
       pointer-events: auto; user-select: none;
     }
     .primitive-header,
-    .note-header,
-    .load-audio-header,
-    .lane-header {
+    .note-header {
       padding: 4px 6px;
       border-bottom: 1px solid var(--ruby-border);
       background: var(--ruby-bg);
@@ -481,30 +475,157 @@
     .note-content { width: 100%; height: calc(100% - 24px); padding: 6px; overflow: auto; }
     .note-content[contenteditable="true"] { outline: none; }
 
-    .load-audio-node { width: 180px; }
-    .load-audio-header::after { content: "LoadAudio"; }
+    /* LOAD AUDIO NODE (Multi-slot version) */
+    .load-audio-node {
+      position: absolute;
+      width: 180px;
+      background: #00000030;
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem;
+      color: var(--ruby-text);
+      pointer-events: auto;
+      user-select: none;
+      padding-bottom: 4px; /* space for plus button */
+    }
+    .load-audio-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      background: var(--ruby-bg);
+      font-weight: bold;
+      border-radius: 6px 6px 0 0;
+      cursor: grab;
+    }
+    .load-audio-header::after {
+      content: "LoadAudio";
+    }
     .load-audio-content {
-      padding: 6px; display: flex; flex-direction: column; gap: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 4px;
     }
-    .load-audio-buttons { display: flex; gap: 6px; }
-    .load-audio-output {
-      position: absolute; top: 50%; right: 0; transform: translate(50%, -50%);
+    .load-audio-slot {
+      display: flex;
+      align-items: center;
+      gap: 4px;
     }
-    .load-audio-info { font-size: 0.8rem; color: var(--ruby-muted); }
+    .load-audio-info {
+      font-size: 0.8rem;
+      color: var(--ruby-muted);
+    }
+    .load-audio-buttons button {
+      cursor: pointer;
+    }
+    .load-audio-add-btn {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #555;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+      font-size: 12px;
+      margin: 4px auto 0 auto;
+    }
+    .load-audio-add-btn:hover {
+      background: var(--ruby-hover);
+    }
+    .load-audio-outputs {
+      position: absolute;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-right: 4px;
+    }
 
-    .lane-node { width: 400px; height: 100px; }
-    .lane-header::after { content: "Lane"; }
+    /* LANE NODE (multiple row inputs + row outputs) */
+    .lane-node {
+      position: absolute;
+      background: #00000030;
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem; color: var(--ruby-text);
+      pointer-events: auto; user-select: none;
+      width: 300px;
+    }
+    .lane-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      background: var(--ruby-bg);
+      font-weight: bold;
+      border-radius: 6px 6px 0 0;
+      cursor: grab;
+    }
+    .lane-rows-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 4px;
+    }
+    .lane-row {
+      display: flex;
+      align-items: center;
+      position: relative;
+      border: 1px solid var(--ruby-border);
+      border-radius: 4px;
+      background: #11111130;
+      height: 60px;
+      padding: 4px;
+    }
     .lane-input {
-      position: absolute; top: 50%; left: 0; transform: translate(-50%, -50%);
+      margin-right: 8px;
     }
     .lane-waveform-canvas {
-      width: 100%; height: calc(100% - 24px);
-      background: #222; display: block;
+      flex: 1;
+      height: 100%;
+      background: #222;
+      display: block;
+      border-radius: 4px;
     }
     .lane-noinput {
-      position: absolute; top: 50%; left: 50%;
+      position: absolute;
+      left: 50%;
+      top: 50%;
       transform: translate(-50%, -50%);
-      font-size: 0.8rem; color: var(--ruby-muted);
+      font-size: 0.8rem;
+      color: var(--ruby-muted);
+      pointer-events: none;
+    }
+    .lane-output {
+      margin-left: 8px;
+    }
+    .lane-add-row {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 30px;
+      border-top: 1px solid var(--ruby-border);
+      background: #333;
+      border-radius: 0 0 6px 6px;
+    }
+    .lane-add-button {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #555;
+      color: #fff;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+      font-size: 12px;
+      user-select: none;
+    }
+    .lane-add-button:hover {
+      background: var(--ruby-hover);
     }
   </style>
 </head>
@@ -625,15 +746,16 @@
     let gradientIdCounter = 0;
     let connections = [];
 
-    // Wire‐dragging
+    // Wire‐dragging ephemeral
     let isDraggingWire = false;
-    let wireFromNode = null;
-    let wireFromPort = null;
-    let wireStart = { x: 0, y: 0 };
-    let ephemeralEnd = { x: 0, y: 0 };
     let ephemeralWirePaths = [];
     let ephemeralWireLayers = [];
     let ephemeralGradient = null;
+    let wireStart = { x: 0, y: 0 };
+    let ephemeralEnd = { x: 0, y: 0 };
+
+    // We'll store the specific "fromCircleEl" in a global var
+    window._dragFromCircleEl = null;
 
     // Pan/zoom state
     let gridOffset = { x: 0, y: 0 };
@@ -899,27 +1021,27 @@
       }
     });
 
-    /** Start ephemeral wire from a node circle. */
-    function startEphemeralWire(fromNode, fromPort, screenX, screenY) {
+    /** Start ephemeral wire from a specific circle. */
+    function startEphemeralWire(fromCircleEl, screenX, screenY) {
       isDraggingWire = true;
-      wireFromNode = fromNode;
-      wireFromPort = fromPort;
+      window._dragFromCircleEl = fromCircleEl;
+
+      // Remember the starting coords
       wireStart = screenToContainerCoords(screenX, screenY);
       ephemeralEnd = { x: wireStart.x, y: wireStart.y };
+
+      // Create ephemeral wire visuals
       ephemeralWirePaths = [];
       ephemeralWireLayers = [];
-
-      // Create ephemeral gradient
       const tempGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
       tempGrad.setAttribute("id", "temp-grad");
       tempGrad.setAttribute("gradientUnits", "userSpaceOnUse");
       const stopA = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
       stopA.setAttribute("offset", "0%");
-      let srcColor = getConnectionPointColor(fromNode.querySelector('.io-circle'));
-      stopA.setAttribute("stop-color", srcColor);
+      stopA.setAttribute("stop-color", getConnectionPointColor(fromCircleEl));
       const stopB = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
       stopB.setAttribute("offset", "100%");
-      stopB.setAttribute("stop-color", srcColor);
+      stopB.setAttribute("stop-color", getConnectionPointColor(fromCircleEl));
       tempGrad.appendChild(stopA);
       tempGrad.appendChild(stopB);
       svgDefs.appendChild(tempGrad);
@@ -947,6 +1069,7 @@
       if (!isDraggingWire) return;
       ephemeralEnd = screenToContainerCoords(e.clientX, e.clientY);
     });
+
     document.addEventListener('mouseup', (e) => {
       if (!isDraggingWire) return;
       isDraggingWire = false;
@@ -956,58 +1079,75 @@
         svgDefs.removeChild(ephemeralGradient);
         ephemeralGradient = null;
       }
-      // Check drop target
+
+      // See what circle we dropped on
       const dropTarget = document.elementFromPoint(e.clientX, e.clientY);
       if (dropTarget && dropTarget.classList.contains('io-circle')) {
-        const targetNode = dropTarget.closest('.lane-node');
-        if (targetNode) {
-          const permanentGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
-          const gradId = "grad-" + (gradientIdCounter++);
-          permanentGrad.setAttribute("id", gradId);
-          permanentGrad.setAttribute("gradientUnits", "userSpaceOnUse");
-          const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-          stop1.setAttribute("offset", "0%");
-          let sourceCircle = wireFromNode.querySelector('.io-circle');
-          stop1.setAttribute("stop-color", getConnectionPointColor(sourceCircle));
-          const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-          stop2.setAttribute("offset", "100%");
-          stop2.setAttribute("stop-color", getConnectionPointColor(dropTarget));
-          permanentGrad.appendChild(stop1);
-          permanentGrad.appendChild(stop2);
-          svgDefs.appendChild(permanentGrad);
+        const fromCircleEl = window._dragFromCircleEl;
+        const toCircleEl = dropTarget;
 
-          let permanentConn = {
-            fromNode: wireFromNode,
-            fromPort: 'output',
-            toNode: targetNode,
-            toPort: 'input',
-            gradientEl: permanentGrad,
-            gradientId: gradId,
-            layers: [],
-            pathEls: []
-          };
-          for (let i = 0; i < 5; i++) {
-            let path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.classList.add('connection-path');
-            path.setAttribute("stroke", "url(#" + gradId + ")");
-            connectionCanvas.appendChild(path);
-            permanentConn.pathEls.push(path);
-            permanentConn.layers.push({
-              baseOffset: (Math.random() * 20) - 10,
-              variationAmplitude: 5 + Math.random() * 5,
-              phase: Math.random() * Math.PI * 2,
-              baseWidth: 2 + Math.random() * 2,
-              widthVariation: 1 + Math.random(),
-              opacity: (i === 2 ? 0.8 : 0.4)
-            });
-          }
-          connections.push(permanentConn);
+        // If we only allow output->input or input->output
+        if (fromCircleEl.dataset.port === toCircleEl.dataset.port) {
+          // same port type => skip
+          ephemeralWirePaths.forEach(path => connectionCanvas.removeChild(path));
+          ephemeralWirePaths = [];
+          ephemeralWireLayers = [];
+          console.log("Skipping: can't connect same port types");
+          window._dragFromCircleEl = null;
+          return;
         }
+
+        // Good to connect
+        const permanentGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+        const gradId = "grad-" + (gradientIdCounter++);
+        permanentGrad.setAttribute("id", gradId);
+        permanentGrad.setAttribute("gradientUnits", "userSpaceOnUse");
+
+        const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        stop1.setAttribute("offset", "0%");
+        stop1.setAttribute("stop-color", getConnectionPointColor(fromCircleEl));
+
+        const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+        stop2.setAttribute("offset", "100%");
+        stop2.setAttribute("stop-color", getConnectionPointColor(toCircleEl));
+
+        permanentGrad.appendChild(stop1);
+        permanentGrad.appendChild(stop2);
+        svgDefs.appendChild(permanentGrad);
+
+        // Create a new connection object that references these EXACT circles
+        let permanentConn = {
+          fromCircleEl: fromCircleEl,
+          toCircleEl: toCircleEl,
+          gradientEl: permanentGrad,
+          gradientId: gradId,
+          layers: [],
+          pathEls: []
+        };
+
+        // 5 path layers for fancy look
+        for (let i = 0; i < 5; i++) {
+          let path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+          path.classList.add('connection-path');
+          path.setAttribute("stroke", "url(#" + gradId + ")");
+          connectionCanvas.appendChild(path);
+          permanentConn.pathEls.push(path);
+          permanentConn.layers.push({
+            baseOffset: (Math.random() * 20) - 10,
+            variationAmplitude: 5 + Math.random() * 5,
+            phase: Math.random() * Math.PI * 2,
+            baseWidth: 2 + Math.random() * 2,
+            widthVariation: 1 + Math.random(),
+            opacity: (i === 2 ? 0.8 : 0.4)
+          });
+        }
+        connections.push(permanentConn);
       }
 
       ephemeralWirePaths.forEach(path => connectionCanvas.removeChild(path));
       ephemeralWirePaths = [];
       ephemeralWireLayers = [];
+      window._dragFromCircleEl = null;
     });
 
     // *** ANIMATION LOOP *** //
@@ -1045,11 +1185,13 @@
 
       // Permanent connections
       connections.forEach(conn => {
-        const outCircle = conn.fromNode.querySelector('.io-circle');
-        const inCircle = conn.toNode.querySelector('.io-circle');
-        if (!outCircle || !inCircle) return;
-        const { x: x1, y: y1 } = getCircleCenterInContainer(outCircle);
-        const { x: x2, y: y2 } = getCircleCenterInContainer(inCircle);
+        const fromCircle = conn.fromCircleEl;
+        const toCircle = conn.toCircleEl;
+        if (!fromCircle || !toCircle) return;
+
+        const { x: x1, y: y1 } = getCircleCenterInContainer(fromCircle);
+        const { x: x2, y: y2 } = getCircleCenterInContainer(toCircle);
+
         const dx = x2 - x1, dy = y2 - y1;
         const len = Math.sqrt(dx*dx + dy*dy) || 1;
         const perpX = -dy/len, perpY = dx/len;
@@ -1071,58 +1213,15 @@
           conn.gradientEl.setAttribute("y1", y1);
           conn.gradientEl.setAttribute("x2", x2);
           conn.gradientEl.setAttribute("y2", y2);
-          conn.gradientEl.firstChild.setAttribute("stop-color", getConnectionPointColor(outCircle));
-          conn.gradientEl.lastChild.setAttribute("stop-color", getConnectionPointColor(inCircle));
-        }
-      });
-
-      // Lane waveforms
-      connections.forEach(conn => {
-        if (!conn.toNode || !conn.toNode.classList.contains('lane-node')) return;
-        if (!conn.fromNode || !conn.fromNode.classList.contains('load-audio-node')) return;
-        const lane = conn.toNode;
-        const loadAudio = conn.fromNode;
-        const canvas = lane.querySelector('canvas');
-        const noInput = lane.querySelector('.lane-noinput');
-        if (loadAudio._audioBuffer) {
-          noInput.style.display = 'none';
-          const rect = canvas.getBoundingClientRect();
-          if (canvas.width !== Math.floor(rect.width) || canvas.height !== Math.floor(rect.height)) {
-            canvas.width = Math.floor(rect.width);
-            canvas.height = Math.floor(rect.height);
-          }
-          drawWaveform(canvas, loadAudio._audioBuffer);
-        } else {
-          noInput.style.display = 'block';
-          noInput.textContent = 'No audio loaded';
+          // Update gradient stop colors
+          conn.gradientEl.firstChild.setAttribute("stop-color", getConnectionPointColor(fromCircle));
+          conn.gradientEl.lastChild.setAttribute("stop-color", getConnectionPointColor(toCircle));
         }
       });
 
       requestAnimationFrame(updateScene);
     }
     requestAnimationFrame(updateScene);
-
-    /** Draw a waveform from an AudioBuffer on the lane's canvas. */
-    function drawWaveform(canvas, audioBuffer) {
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = '#222';
-      ctx.fillRect(0, 0, w, h);
-      const chanData = audioBuffer.getChannelData(0);
-      const step = Math.floor(chanData.length / w);
-      const center = h * 0.5;
-      ctx.strokeStyle = '#ffbbbb';
-      ctx.beginPath();
-      ctx.moveTo(0, center);
-      for (let i = 0; i < w; i++) {
-        const idx = i * step;
-        const sampleVal = chanData[idx] || 0;
-        const y = center + sampleVal * center;
-        ctx.lineTo(i, y);
-      }
-      ctx.stroke();
-    }
 
     // *** CREATE NODES *** //
     function createPrimitiveNode(screenX, screenY) {
@@ -1140,10 +1239,21 @@
       body.className = 'primitive-body';
       body.textContent = '(No real audio logic)';
       node.appendChild(body);
+
+      // Output circle
       const output = document.createElement('div');
       output.classList.add('primitive-output', 'io-circle');
+      output.dataset.port = "output";
+      output.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        startEphemeralWire(output, e.clientX, e.clientY);
+      });
       node.appendChild(output);
+
       nodeLayer.appendChild(node);
+
+      // Draggable
       let isDrag = false, offsetX = 0, offsetY = 0;
       header.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
@@ -1167,11 +1277,6 @@
           node.style.zIndex = 'auto';
         }
       });
-      output.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        e.stopPropagation();
-        startEphemeralWire(node, 'output', e.clientX, e.clientY);
-      });
     }
 
     function createNoteNode(screenX, screenY) {
@@ -1191,7 +1296,10 @@
       noteContent.contentEditable = 'true';
       noteContent.innerText = '(Type your note here...)';
       note.appendChild(noteContent);
+
       nodeLayer.appendChild(note);
+
+      // Draggable
       let isDrag = false, offsetX = 0, offsetY = 0;
       noteHeader.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
@@ -1217,61 +1325,119 @@
       });
     }
 
+    // *** MULTI-SLOT LoadAudio Node (with multiple outputs) ***
     function createLoadAudioNode(screenX, screenY) {
       const node = document.createElement('div');
       node.className = 'load-audio-node';
-      node.style.width = '180px';
+
+      // We'll store all audio buffers in an array
+      node._audioBuffers = [];
+
       const { x, y } = screenToContainerCoords(screenX, screenY);
       node.style.left = x + 'px';
       node.style.top = y + 'px';
-      node._audioBuffer = null;
+
+      // Header
       const header = document.createElement('div');
       header.className = 'load-audio-header';
       node.appendChild(header);
-      const output = document.createElement('div');
-      output.classList.add('load-audio-output', 'io-circle');
-      node.appendChild(output);
+
+      // A container for the slot rows
       const content = document.createElement('div');
       content.className = 'load-audio-content';
       node.appendChild(content);
-      const btnRow = document.createElement('div');
-      btnRow.className = 'load-audio-buttons';
-      const fileInput = document.createElement('input');
-      fileInput.type = 'file';
-      fileInput.accept = 'audio/*';
-      fileInput.style.display = 'none';
-      node.appendChild(fileInput);
-      const btnUpload = document.createElement('button');
-      btnUpload.textContent = 'upload';
-      btnUpload.style.cursor = 'pointer';
-      btnUpload.addEventListener('click', () => {
-        fileInput.click();
-      });
-      fileInput.addEventListener('change', async (e) => {
-        if (!fileInput.files || fileInput.files.length < 1) return;
-        const file = fileInput.files[0];
-        info.textContent = 'loading ' + file.name + ' ...';
-        try {
-          const arrayBuf = await file.arrayBuffer();
-          audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
-            node._audioBuffer = audioBuf;
-            info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
-          }, (err) => {
+
+      // A container for the dynamic outputs (one per slot)
+      const outputsContainer = document.createElement('div');
+      outputsContainer.className = 'load-audio-outputs';
+      node.appendChild(outputsContainer);
+
+      function createAudioSlot() {
+        const slot = document.createElement('div');
+        slot.className = 'load-audio-slot';
+
+        // Hidden file input
+        const fileInput = document.createElement('input');
+        fileInput.type = 'file';
+        fileInput.accept = 'audio/*';
+        fileInput.style.display = 'none';
+        slot.appendChild(fileInput);
+
+        // Upload button
+        const btnUpload = document.createElement('button');
+        btnUpload.textContent = 'upload';
+        slot.appendChild(btnUpload);
+
+        // Info text
+        const info = document.createElement('div');
+        info.className = 'load-audio-info';
+        info.textContent = '(no file loaded)';
+        slot.appendChild(info);
+
+        // Behavior
+        btnUpload.addEventListener('click', () => {
+          fileInput.click();
+        });
+        fileInput.addEventListener('change', async (e) => {
+          if (!fileInput.files || fileInput.files.length < 1) return;
+          const file = fileInput.files[0];
+          info.textContent = 'loading ' + file.name + ' ...';
+          try {
+            const arrayBuf = await file.arrayBuffer();
+            audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
+              // Store this buffer in node._audioBuffers
+              node._audioBuffers.push(audioBuf);
+              info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
+            }, (err) => {
+              console.error(err);
+              info.textContent = 'error decoding audio';
+            });
+          } catch (err) {
             console.error(err);
-            info.textContent = 'error decoding audio';
-          });
-        } catch (err) {
-          console.error(err);
-          info.textContent = 'error reading file';
-        }
+            info.textContent = 'error reading file';
+          }
+        });
+
+        return slot;
+      }
+
+      // Create an initial slot + output
+      function addSlotAndOutput() {
+        // Create slot row
+        const newSlot = createAudioSlot();
+        content.appendChild(newSlot);
+
+        // Create output circle
+        const outputCircle = document.createElement('div');
+        outputCircle.classList.add('io-circle');
+        outputCircle.dataset.port = "output";  // mark it as output
+        // Default color
+        outputCircle.dataset.connColor = "#ff6666";
+        outputCircle.style.backgroundColor = "#ff6666";
+        outputCircle.style.borderColor = shadeColor("#ff6666", -20);
+
+        // Mouse down to start wire
+        outputCircle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          startEphemeralWire(outputCircle, e.clientX, e.clientY);
+        });
+
+        outputsContainer.appendChild(outputCircle);
+      }
+      addSlotAndOutput(); // initial
+
+      // Plus button to add more slots (and outputs)
+      const addBtn = document.createElement('div');
+      addBtn.className = 'load-audio-add-btn';
+      addBtn.textContent = '+';
+      node.appendChild(addBtn);
+
+      addBtn.addEventListener('click', () => {
+        addSlotAndOutput();
       });
-      btnRow.appendChild(btnUpload);
-      content.appendChild(btnRow);
-      const info = document.createElement('div');
-      info.className = 'load-audio-info';
-      info.textContent = '(no file loaded)';
-      content.appendChild(info);
-      nodeLayer.appendChild(node);
+
+      // Draggable
       let isDrag = false, offsetX = 0, offsetY = 0;
       header.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
@@ -1295,49 +1461,98 @@
           node.style.zIndex = 'auto';
         }
       });
-      output.addEventListener('mousedown', (e) => {
-        if (e.button !== 0) return;
-        e.stopPropagation();
-        startEphemeralWire(node, 'output', e.clientX, e.clientY);
-      });
+
+      // Finally, add the node to the DOM
+      nodeLayer.appendChild(node);
     }
 
-function createLaneNode(screenX, screenY) {
-  const lane = document.createElement('div');
-  lane.className = 'lane-node';
-  lane.style.width = '400px'; 
-  lane.style.height = '100px';
-  const { x, y } = screenToContainerCoords(screenX, screenY);
-  lane.style.left = x + 'px';
-  lane.style.top = y + 'px';
+    // *** LANE NODE (multiple row inputs + row outputs) ***
+    function createLaneNode(screenX, screenY) {
+      const lane = document.createElement('div');
+      lane.className = 'lane-node';
+      const pos = screenToContainerCoords(screenX, screenY);
+      lane.style.left = pos.x + 'px';
+      lane.style.top = pos.y + 'px';
 
-  const header = document.createElement('div');
-  header.className = 'lane-header';
-  lane.appendChild(header);
+      // Header
+      const header = document.createElement('div');
+      header.className = 'lane-header';
+      header.textContent = 'Lane';
+      lane.appendChild(header);
 
-  const inputCircle = document.createElement('div');
-  inputCircle.classList.add('lane-input', 'io-circle');
-  // Set default lane input color to green (#80ff80)
-  inputCircle.dataset.connColor = "#80ff80";
-  inputCircle.style.backgroundColor = "#80ff80";
-  inputCircle.style.borderColor = shadeColor("#80ff80", -20);
-  lane.appendChild(inputCircle);
+      // Container for lane rows
+      const rowsContainer = document.createElement('div');
+      rowsContainer.className = 'lane-rows-container';
+      lane.appendChild(rowsContainer);
 
-  const canvas = document.createElement('canvas');
-  canvas.className = 'lane-waveform-canvas';
-  lane.appendChild(canvas);
+      // Function to create a lane row
+      function createLaneRow() {
+        const row = document.createElement('div');
+        row.className = 'lane-row';
 
-  const noInput = document.createElement('div');
-  noInput.className = 'lane-noinput';
-  noInput.textContent = 'No input connected';
-  lane.appendChild(noInput);
+        // Input circle
+        const inputCircle = document.createElement('div');
+        inputCircle.classList.add('lane-input', 'io-circle');
+        inputCircle.dataset.port = "input";
+        // Default color
+        inputCircle.dataset.connColor = "#80ff80";
+        inputCircle.style.backgroundColor = "#80ff80";
+        inputCircle.style.borderColor = shadeColor("#80ff80", -20);
+        inputCircle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          startEphemeralWire(inputCircle, e.clientX, e.clientY);
+        });
+        row.appendChild(inputCircle);
 
-  nodeLayer.appendChild(lane);
-      const noInput = document.createElement('div');
-      noInput.className = 'lane-noinput';
-      noInput.textContent = 'No input connected';
-      lane.appendChild(noInput);
+        // Waveform canvas
+        const canvas = document.createElement('canvas');
+        canvas.className = 'lane-waveform-canvas';
+        row.appendChild(canvas);
+
+        // "No input" overlay
+        const noInput = document.createElement('div');
+        noInput.className = 'lane-noinput';
+        noInput.textContent = 'No input connected';
+        row.appendChild(noInput);
+
+        // Output circle
+        const outputCircle = document.createElement('div');
+        outputCircle.classList.add('lane-output', 'io-circle');
+        outputCircle.dataset.port = "output";
+        // Default color
+        outputCircle.dataset.connColor = "#ff6666";
+        outputCircle.style.backgroundColor = "#ff6666";
+        outputCircle.style.borderColor = shadeColor("#ff6666", -20);
+        outputCircle.addEventListener('mousedown', (e) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          startEphemeralWire(outputCircle, e.clientX, e.clientY);
+        });
+        row.appendChild(outputCircle);
+
+        return row;
+      }
+
+      // Add initial lane row
+      rowsContainer.appendChild(createLaneRow());
+
+      // Add row button
+      const addRowContainer = document.createElement('div');
+      addRowContainer.className = 'lane-add-row';
+      const addButton = document.createElement('div');
+      addButton.className = 'lane-add-button';
+      addButton.textContent = '+';
+      addRowContainer.appendChild(addButton);
+      lane.appendChild(addRowContainer);
+
+      addButton.addEventListener('click', () => {
+        rowsContainer.appendChild(createLaneRow());
+      });
+
       nodeLayer.appendChild(lane);
+
+      // Draggable
       let isDrag = false, offsetX = 0, offsetY = 0;
       header.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
