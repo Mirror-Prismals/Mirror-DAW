@@ -39,6 +39,8 @@
     }
     body {
       background: radial-gradient(circle at center, var(--bg-center), var(--bg-edge));
+      /* Apply gemstone glimmer animation */
+      animation: gemstoneGlimmer 5s infinite ease-in-out;
       display: grid;
       width: 100vw; height: 100vh;
       grid-template-columns: 20% 80%;
@@ -51,6 +53,37 @@
       user-select: none;
       color: var(--ruby-text);
     }
+    /* Gemstone glimmer keyframes */
+    @keyframes gemstoneGlimmer {
+      0%   { filter: brightness(1) contrast(1); }
+      50%  { filter: brightness(1.2) contrast(1.3); }
+      100% { filter: brightness(1) contrast(1); }
+    }
+    /* Sparkle effect overlay */
+    #sparkles {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 10000;
+    }
+    .sparkle {
+      position: absolute;
+      width: 4px;
+      height: 4px;
+      background: radial-gradient(circle, rgba(255,255,255,1) 0%, rgba(255,255,255,0) 70%);
+      border-radius: 50%;
+      animation: sparkleAnim 1s ease-out forwards;
+    }
+    @keyframes sparkleAnim {
+      0%   { opacity: 1; transform: scale(0.5); }
+      50%  { opacity: 1; transform: scale(1.5); }
+      100% { opacity: 0; transform: scale(0.5); }
+    }
+
+    /* The rest of your original CSS remains unchanged */
 
     /* SAMPLE MANAGER (left) */
     .sample-container {
@@ -555,844 +588,817 @@
         <button class="add-node-btn" id="addNodeClose">✕</button>
       </div>
     </div>
-    <div class="add-node-content" id="addNodeContent">
+    <div class="add-node-content" id="add-nodeContent">
       <div class="node-type-item">Node Type A</div>
       <div class="node-type-item">Node Type B</div>
       <div class="node-type-item">Node Type C</div>
     </div>
   </div>
 
-<script>
-const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  <!-- Sparkle overlay -->
+  <div id="sparkles"></div>
 
-// Basic references
-const sampleManager = document.getElementById('sampleManager');
-const sampleTab = document.getElementById('sampleTab');
-const fxChain = document.getElementById('fxChain');
-const fxTab = document.getElementById('fxTab');
-const timeline = document.getElementById('timeline');
-const panZoomContainer = document.getElementById('panZoomContainer');
-const nodeLayer = document.getElementById('nodeLayer');
-const connectionCanvas = document.getElementById('connectionCanvas');
-const timelineMenu = document.getElementById('timelineMenu');
-const addNodeSubmenu = document.getElementById('addNodeSubmenu');
-const addNodePanel = document.getElementById('addNodePanel');
-const addNodeHeader = document.getElementById('addNodeHeader');
-const addNodeContent = document.getElementById('addNodeContent');
-const addNodeToggle = document.getElementById('addNodeToggle');
-const addNodeClose = document.getElementById('addNodeClose');
+  <script>
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
-const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-connectionCanvas.appendChild(svgDefs);
+    // Basic references
+    const sampleManager = document.getElementById('sampleManager');
+    const sampleTab = document.getElementById('sampleTab');
+    const fxChain = document.getElementById('fxChain');
+    const fxTab = document.getElementById('fxTab');
+    const timeline = document.getElementById('timeline');
+    const panZoomContainer = document.getElementById('panZoomContainer');
+    const nodeLayer = document.getElementById('nodeLayer');
+    const connectionCanvas = document.getElementById('connectionCanvas');
+    const timelineMenu = document.getElementById('timelineMenu');
+    const addNodeSubmenu = document.getElementById('addNodeSubmenu');
+    const addNodePanel = document.getElementById('addNodePanel');
+    const addNodeHeader = document.getElementById('addNodeHeader');
+    const addNodeContent = document.getElementById('add-nodeContent');
+    const addNodeToggle = document.getElementById('addNodeToggle');
+    const addNodeClose = document.getElementById('addNodeClose');
 
-// Connection data
-let gradientIdCounter = 0;
-let connections = [];
+    const svgDefs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    connectionCanvas.appendChild(svgDefs);
 
-// Wire‐dragging
-let isDraggingWire = false;
-let wireFromNode = null;
-let wireFromPort = null;
-let wireStart = { x: 0, y: 0 };
-let ephemeralEnd = { x: 0, y: 0 };
-let ephemeralWirePaths = [];
-let ephemeralWireLayers = [];
-let ephemeralGradient = null;
+    // Connection data
+    let gradientIdCounter = 0;
+    let connections = [];
 
-// Pan/zoom state
-let gridOffset = { x: 0, y: 0 };
-let zoom = 1;
+    // Wire‐dragging
+    let isDraggingWire = false;
+    let wireFromNode = null;
+    let wireFromPort = null;
+    let wireStart = { x: 0, y: 0 };
+    let ephemeralEnd = { x: 0, y: 0 };
+    let ephemeralWirePaths = [];
+    let ephemeralWireLayers = [];
+    let ephemeralGradient = null;
 
-/** Apply the CSS transform to panZoomContainer. */
-function updatePanZoomTransform() {
-  panZoomContainer.style.transform =
-    `translate(${gridOffset.x}px, ${gridOffset.y}px) scale(${zoom})`;
-}
+    // Pan/zoom state
+    let gridOffset = { x: 0, y: 0 };
+    let zoom = 1;
 
-/** Convert screen (clientX, clientY) => local “unscaled” coordinates in panZoomContainer. */
-function screenToContainerCoords(clientX, clientY) {
-  // Because panZoomContainer is itself scaled & translated,
-  // we can take the difference from its boundingClientRect, then divide by zoom.
-  const cRect = panZoomContainer.getBoundingClientRect();
-  return {
-    x: (clientX - cRect.left) / zoom,
-    y: (clientY - cRect.top) / zoom
-  };
-}
+    /** Apply the CSS transform to panZoomContainer. */
+    function updatePanZoomTransform() {
+      panZoomContainer.style.transform =
+        `translate(${gridOffset.x}px, ${gridOffset.y}px) scale(${zoom})`;
+    }
 
-/** Return the center of a circle in container coords, ignoring the scale visually. */
-function getCircleCenterInContainer(circleEl) {
-  const circleRect = circleEl.getBoundingClientRect();
-  const containerRect = panZoomContainer.getBoundingClientRect();
-  const cx = (circleRect.left + circleRect.width * 0.5 - containerRect.left) / zoom;
-  const cy = (circleRect.top + circleRect.height * 0.5 - containerRect.top) / zoom;
-  return { x: cx, y: cy };
-}
-
-/** Return the color used by an .io-circle. */
-function getConnectionPointColor(el) {
-  return el.dataset.connColor || window.getComputedStyle(el).backgroundColor;
-}
-
-// *** SAMPLE/FX CHAIN TABS *** //
-function updateBodyGrid() {
-  const sampleHidden = sampleManager.classList.contains('hidden');
-  const fxHidden = fxChain.classList.contains('hidden');
-  const newCols = sampleHidden ? '0% 100%' : '20% 80%';
-  const newRows = fxHidden ? '100% 0%' : '70% 30%';
-  document.body.style.gridTemplateColumns = newCols;
-  document.body.style.gridTemplateRows = newRows;
-}
-sampleTab.addEventListener('click', () => {
-  sampleManager.classList.toggle('hidden');
-  updateBodyGrid();
-  if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
-  else setTimelineBevel(0);
-});
-fxTab.addEventListener('click', () => {
-  fxChain.classList.toggle('hidden');
-  updateBodyGrid();
-  if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
-  else setTimelineBevel(0);
-});
-
-// *** TIMELINE BEVEL ANIMATION *** //
-let timelineBevelProgress = 0, timelineTargetProgress = 0, bevelStartTime = null;
-const bevelDuration = 500;
-function lerp(a, b, t) { return a + (b - a) * t; }
-function updateTimelineBevel(progress) {
-  const inset = lerp(4, 8, progress);
-  const blur = lerp(8, 16, progress);
-  const outerY = lerp(4, 6, progress);
-  const outerBlur = lerp(6, 10, progress);
-  const outerAlpha = lerp(0.7, 0.9, progress);
-  const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1),
-                   inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5),
-                   0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
-  timeline.style.boxShadow = boxShadow;
-}
-function animateBevel(ts) {
-  if (!bevelStartTime) bevelStartTime = ts;
-  const elapsed = ts - bevelStartTime;
-  const t = Math.min(elapsed / bevelDuration, 1);
-  timelineBevelProgress += (timelineTargetProgress - timelineBevelProgress) * t;
-  updateTimelineBevel(timelineBevelProgress);
-  if (t < 1) requestAnimationFrame(animateBevel);
-  else {
-    timelineBevelProgress = timelineTargetProgress;
-    bevelStartTime = null;
-  }
-}
-function setTimelineBevel(target) {
-  timelineTargetProgress = target;
-  bevelStartTime = null;
-  requestAnimationFrame(animateBevel);
-}
-setTimelineBevel(0); // initial
-
-// *** TIMELINE DRAG & ZOOM *** //
-let isTimelineDragging = false;
-let dragStart = { x: 0, y: 0 };
-
-timeline.addEventListener('mousedown', (e) => {
-  // If user clicked on a node or the transport, skip
-  if (e.target.closest('.transport-node')) return;
-  if (e.target.closest('.primitive-node')) return;
-  if (e.target.closest('.note-node')) return;
-  if (e.target.closest('.load-audio-node')) return;
-  if (e.target.closest('.lane-node')) return;
-  if (e.button !== 0) return;
-  isTimelineDragging = true;
-  dragStart = { x: e.clientX, y: e.clientY };
-  timeline.style.cursor = 'grabbing';
-});
-document.addEventListener('mousemove', (e) => {
-  if (!isTimelineDragging) return;
-  const dx = e.clientX - dragStart.x;
-  const dy = e.clientY - dragStart.y;
-  gridOffset.x += dx;
-  gridOffset.y += dy;
-  timeline.style.backgroundPosition = `${gridOffset.x}px ${gridOffset.y}px`;
-  updatePanZoomTransform();
-  dragStart = { x: e.clientX, y: e.clientY };
-});
-document.addEventListener('mouseup', () => {
-  if (isTimelineDragging) {
-    isTimelineDragging = false;
-    timeline.style.cursor = 'grab';
-  }
-});
-function updateZoom() {
-  const outerSize = 100 * zoom;
-  const innerSize = 10 * zoom;
-  timeline.style.backgroundSize = `
-    ${outerSize}px ${outerSize}px,
-    ${outerSize}px ${outerSize}px,
-    ${innerSize}px ${innerSize}px,
-    ${innerSize}px ${innerSize}px`;
-}
-timeline.addEventListener('wheel', (e) => {
-  if (e.target.closest('.transport-node')) return;
-  if (e.target.closest('.primitive-node')) return;
-  if (e.target.closest('.note-node')) return;
-  if (e.target.closest('.load-audio-node')) return;
-  if (e.target.closest('.lane-node')) return;
-  e.preventDefault();
-  if (e.deltaY < 0) zoom *= 1.1; else zoom *= 0.9;
-  zoom = Math.max(0.05, Math.min(zoom, 5));
-  updateZoom();
-  updatePanZoomTransform();
-});
-updateZoom();
-
-// *** TRANSPORT DRAG *** //
-const transportNode = document.getElementById('transportNode');
-const transportHandle = document.getElementById('transportHandle');
-let isTransportDrag = false, transOffX = 0, transOffY = 0;
-transportHandle.addEventListener('mousedown', (e) => {
-  if (e.button !== 0) return;
-  isTransportDrag = true;
-  const rect = transportNode.getBoundingClientRect();
-  transOffX = e.clientX - rect.left;
-  transOffY = e.clientY - rect.top;
-  transportHandle.style.cursor = 'grabbing';
-});
-document.addEventListener('mousemove', (e) => {
-  if (!isTransportDrag) return;
-  const timelineRect = timeline.getBoundingClientRect();
-  let newLeft = e.clientX - transOffX - timelineRect.left;
-  let newTop = e.clientY - transOffY - timelineRect.top;
-  transportNode.style.left = newLeft + 'px';
-  transportNode.style.top = newTop + 'px';
-});
-document.addEventListener('mouseup', () => {
-  if (isTransportDrag) {
-    isTransportDrag = false;
-    transportHandle.style.cursor = 'grab';
-  }
-});
-
-// *** TRANSPORT BUTTONS *** //
-const queueButton = document.getElementById('queueButton');
-const queueCaret = document.getElementById('queueCaret');
-const queueDropdown = document.getElementById('queueDropdown');
-const queueIcon = document.getElementById('queueIcon');
-const queueLabel = document.getElementById('queueLabel');
-queueCaret.addEventListener('click', (e) => {
-  e.stopPropagation();
-  queueDropdown.style.display = (queueDropdown.style.display === 'block') ? 'none' : 'block';
-});
-document.addEventListener('click', () => { queueDropdown.style.display = 'none'; });
-queueDropdown.addEventListener('click', (e) => {
-  if (e.target.tagName.toLowerCase() === 'li') {
-    queueIcon.textContent = e.target.getAttribute('data-icon');
-    queueLabel.textContent = e.target.getAttribute('data-label');
-    queueDropdown.style.display = 'none';
-  }
-});
-document.getElementById('stopBtn').addEventListener('click', () => {
-  console.log('Stop clicked!');
-});
-document.getElementById('stopAllBtn').addEventListener('click', () => {
-  console.log('Stop All clicked!');
-});
-document.getElementById('batchInput').addEventListener('change', (e) => {
-  console.log('Batch size changed to:', e.target.value);
-});
-
-// *** TIMELINE CONTEXT MENU *** //
-timeline.addEventListener('contextmenu', (e) => {
-  if (e.target.closest('.transport-node')) return;
-  if (e.target.closest('.primitive-node')) return;
-  if (e.target.closest('.note-node')) return;
-  if (e.target.closest('.load-audio-node')) return;
-  if (e.target.closest('.lane-node')) return;
-  e.preventDefault();
-  timelineMenu.style.display = 'block';
-  timelineMenu.style.left = e.clientX + 'px';
-  timelineMenu.style.top = e.clientY + 'px';
-});
-document.addEventListener('click', () => { timelineMenu.style.display = 'none'; });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') timelineMenu.style.display = 'none';
-});
-document.getElementById('menuAddGroup').addEventListener('click', () => {
-  console.log('Add Group clicked');
-  timelineMenu.style.display = 'none';
-});
-
-// *** "Add Node" panel *** //
-let isAddNodeDragging = false, addNodeOffsetX = 0, addNodeOffsetY = 0;
-let isAddNodeExpanded = true;
-addNodeHeader.addEventListener('mousedown', (e) => {
-  if (e.button !== 0) return;
-  isAddNodeDragging = true;
-  const rect = addNodePanel.getBoundingClientRect();
-  addNodeOffsetX = e.clientX - rect.left;
-  addNodeOffsetY = e.clientY - rect.top;
-  addNodeHeader.style.cursor = 'grabbing';
-});
-document.addEventListener('mousemove', (e) => {
-  if (!isAddNodeDragging) return;
-  addNodePanel.style.left = (e.clientX - addNodeOffsetX) + 'px';
-  addNodePanel.style.top = (e.clientY - addNodeOffsetY) + 'px';
-});
-document.addEventListener('mouseup', () => {
-  if (isAddNodeDragging) {
-    isAddNodeDragging = false;
-    addNodeHeader.style.cursor = 'grab';
-  }
-});
-addNodeToggle.addEventListener('click', () => {
-  isAddNodeExpanded = !isAddNodeExpanded;
-  addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
-  addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
-});
-addNodeClose.addEventListener('click', () => {
-  addNodePanel.style.display = 'none';
-});
-
-// *** NODE CREATION *** //
-addNodeSubmenu.addEventListener('click', (e) => {
-  if (e.target.tagName.toLowerCase() === 'li') {
-    const nodetype = e.target.getAttribute('data-nodetype');
-    const x = parseInt(timelineMenu.style.left) || 100;
-    const y = parseInt(timelineMenu.style.top) || 100;
-    if (nodetype === 'primitive') createPrimitiveNode(x, y);
-    else if (nodetype === 'note') createNoteNode(x, y);
-    else if (nodetype === 'loadaudio') createLoadAudioNode(x, y);
-    else if (nodetype === 'lane') createLaneNode(x, y);
-    timelineMenu.style.display = 'none';
-  }
-});
-
-/** Start ephemeral wire from a node circle. */
-function startEphemeralWire(fromNode, fromPort, screenX, screenY) {
-  isDraggingWire = true;
-  wireFromNode = fromNode;
-  wireFromPort = fromPort;
-  wireStart = screenToContainerCoords(screenX, screenY);
-  ephemeralEnd = { x: wireStart.x, y: wireStart.y };
-  ephemeralWirePaths = [];
-  ephemeralWireLayers = [];
-
-  // Create ephemeral gradient
-  const tempGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
-  tempGrad.setAttribute("id", "temp-grad");
-  tempGrad.setAttribute("gradientUnits", "userSpaceOnUse");
-  const stopA = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-  stopA.setAttribute("offset", "0%");
-  let srcColor = getConnectionPointColor(fromNode.querySelector('.io-circle'));
-  stopA.setAttribute("stop-color", srcColor);
-  const stopB = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-  stopB.setAttribute("offset", "100%");
-  stopB.setAttribute("stop-color", srcColor);
-  tempGrad.appendChild(stopA);
-  tempGrad.appendChild(stopB);
-  svgDefs.appendChild(tempGrad);
-  ephemeralGradient = tempGrad;
-
-  // 3 ephemeral layers
-  for (let i = 0; i < 3; i++) {
-    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-    path.classList.add('connection-path');
-    path.setAttribute("stroke", "url(#temp-grad)");
-    connectionCanvas.appendChild(path);
-    ephemeralWirePaths.push(path);
-    ephemeralWireLayers.push({
-      baseOffset: (Math.random() * 20) - 10,
-      variationAmplitude: 5 + Math.random() * 5,
-      phase: Math.random() * Math.PI * 2,
-      baseWidth: 2 + Math.random() * 2,
-      widthVariation: 1 + Math.random(),
-      opacity: 0.5
-    });
-  }
-}
-
-document.addEventListener('mousemove', (e) => {
-  if (!isDraggingWire) return;
-  ephemeralEnd = screenToContainerCoords(e.clientX, e.clientY);
-});
-document.addEventListener('mouseup', (e) => {
-  if (!isDraggingWire) return;
-  isDraggingWire = false;
-
-  // Remove ephemeral gradient
-  if (ephemeralGradient) {
-    svgDefs.removeChild(ephemeralGradient);
-    ephemeralGradient = null;
-  }
-  // Check drop target
-  const dropTarget = document.elementFromPoint(e.clientX, e.clientY);
-  if (dropTarget && dropTarget.classList.contains('io-circle')) {
-    // Example: only connect to a Lane node
-    const targetNode = dropTarget.closest('.lane-node');
-    if (targetNode) {
-      // Permanent gradient
-      const permanentGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
-      const gradId = "grad-" + (gradientIdCounter++);
-      permanentGrad.setAttribute("id", gradId);
-      permanentGrad.setAttribute("gradientUnits", "userSpaceOnUse");
-      const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-      stop1.setAttribute("offset", "0%");
-      let sourceCircle = wireFromNode.querySelector('.io-circle');
-      stop1.setAttribute("stop-color", getConnectionPointColor(sourceCircle));
-      const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
-      stop2.setAttribute("offset", "100%");
-      stop2.setAttribute("stop-color", getConnectionPointColor(dropTarget));
-      permanentGrad.appendChild(stop1);
-      permanentGrad.appendChild(stop2);
-      svgDefs.appendChild(permanentGrad);
-
-      // 5-layer aurora path
-      let permanentConn = {
-        fromNode: wireFromNode,
-        fromPort: 'output',
-        toNode: targetNode,
-        toPort: 'input',
-        gradientEl: permanentGrad,
-        gradientId: gradId,
-        layers: [],
-        pathEls: []
+    /** Convert screen (clientX, clientY) => local “unscaled” coordinates in panZoomContainer. */
+    function screenToContainerCoords(clientX, clientY) {
+      const cRect = panZoomContainer.getBoundingClientRect();
+      return {
+        x: (clientX - cRect.left) / zoom,
+        y: (clientY - cRect.top) / zoom
       };
-      for (let i = 0; i < 5; i++) {
-        let path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    }
+
+    /** Return the center of a circle in container coords, ignoring the scale visually. */
+    function getCircleCenterInContainer(circleEl) {
+      const circleRect = circleEl.getBoundingClientRect();
+      const containerRect = panZoomContainer.getBoundingClientRect();
+      const cx = (circleRect.left + circleRect.width * 0.5 - containerRect.left) / zoom;
+      const cy = (circleRect.top + circleRect.height * 0.5 - containerRect.top) / zoom;
+      return { x: cx, y: cy };
+    }
+
+    /** Return the color used by an .io-circle. */
+    function getConnectionPointColor(el) {
+      return el.dataset.connColor || window.getComputedStyle(el).backgroundColor;
+    }
+
+    // *** SAMPLE/FX CHAIN TABS *** //
+    function updateBodyGrid() {
+      const sampleHidden = sampleManager.classList.contains('hidden');
+      const fxHidden = fxChain.classList.contains('hidden');
+      const newCols = sampleHidden ? '0% 100%' : '20% 80%';
+      const newRows = fxHidden ? '100% 0%' : '70% 30%';
+      document.body.style.gridTemplateColumns = newCols;
+      document.body.style.gridTemplateRows = newRows;
+    }
+    sampleTab.addEventListener('click', () => {
+      sampleManager.classList.toggle('hidden');
+      updateBodyGrid();
+      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
+      else setTimelineBevel(0);
+    });
+    fxTab.addEventListener('click', () => {
+      fxChain.classList.toggle('hidden');
+      updateBodyGrid();
+      if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) setTimelineBevel(1);
+      else setTimelineBevel(0);
+    });
+
+    // *** TIMELINE BEVEL ANIMATION *** //
+    let timelineBevelProgress = 0, timelineTargetProgress = 0, bevelStartTime = null;
+    const bevelDuration = 500;
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function updateTimelineBevel(progress) {
+      const inset = lerp(4, 8, progress);
+      const blur = lerp(8, 16, progress);
+      const outerY = lerp(4, 6, progress);
+      const outerBlur = lerp(6, 10, progress);
+      const outerAlpha = lerp(0.7, 0.9, progress);
+      const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1),
+                       inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5),
+                       0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
+      timeline.style.boxShadow = boxShadow;
+    }
+    function animateBevel(ts) {
+      if (!bevelStartTime) bevelStartTime = ts;
+      const elapsed = ts - bevelStartTime;
+      const t = Math.min(elapsed / bevelDuration, 1);
+      timelineBevelProgress += (timelineTargetProgress - timelineBevelProgress) * t;
+      updateTimelineBevel(timelineBevelProgress);
+      if (t < 1) requestAnimationFrame(animateBevel);
+      else {
+        timelineBevelProgress = timelineTargetProgress;
+        bevelStartTime = null;
+      }
+    }
+    function setTimelineBevel(target) {
+      timelineTargetProgress = target;
+      bevelStartTime = null;
+      requestAnimationFrame(animateBevel);
+    }
+    setTimelineBevel(0);
+
+    // *** TIMELINE DRAG & ZOOM *** //
+    let isTimelineDragging = false;
+    let dragStart = { x: 0, y: 0 };
+
+    timeline.addEventListener('mousedown', (e) => {
+      if (e.target.closest('.transport-node')) return;
+      if (e.target.closest('.primitive-node')) return;
+      if (e.target.closest('.note-node')) return;
+      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.lane-node')) return;
+      if (e.button !== 0) return;
+      isTimelineDragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      timeline.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isTimelineDragging) return;
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      gridOffset.x += dx;
+      gridOffset.y += dy;
+      timeline.style.backgroundPosition = `${gridOffset.x}px ${gridOffset.y}px`;
+      updatePanZoomTransform();
+      dragStart = { x: e.clientX, y: e.clientY };
+    });
+    document.addEventListener('mouseup', () => {
+      if (isTimelineDragging) {
+        isTimelineDragging = false;
+        timeline.style.cursor = 'grab';
+      }
+    });
+    function updateZoom() {
+      const outerSize = 100 * zoom;
+      const innerSize = 10 * zoom;
+      timeline.style.backgroundSize = `
+        ${outerSize}px ${outerSize}px,
+        ${outerSize}px ${outerSize}px,
+        ${innerSize}px ${innerSize}px,
+        ${innerSize}px ${innerSize}px`;
+    }
+    timeline.addEventListener('wheel', (e) => {
+      if (e.target.closest('.transport-node')) return;
+      if (e.target.closest('.primitive-node')) return;
+      if (e.target.closest('.note-node')) return;
+      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.lane-node')) return;
+      e.preventDefault();
+      if (e.deltaY < 0) zoom *= 1.1; else zoom *= 0.9;
+      zoom = Math.max(0.05, Math.min(zoom, 5));
+      updateZoom();
+      updatePanZoomTransform();
+    });
+    updateZoom();
+
+    // *** TRANSPORT DRAG *** //
+    const transportNode = document.getElementById('transportNode');
+    const transportHandle = document.getElementById('transportHandle');
+    let isTransportDrag = false, transOffX = 0, transOffY = 0;
+    transportHandle.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isTransportDrag = true;
+      const rect = transportNode.getBoundingClientRect();
+      transOffX = e.clientX - rect.left;
+      transOffY = e.clientY - rect.top;
+      transportHandle.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isTransportDrag) return;
+      const timelineRect = timeline.getBoundingClientRect();
+      let newLeft = e.clientX - transOffX - timelineRect.left;
+      let newTop = e.clientY - transOffY - timelineRect.top;
+      transportNode.style.left = newLeft + 'px';
+      transportNode.style.top = newTop + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isTransportDrag) {
+        isTransportDrag = false;
+        transportHandle.style.cursor = 'grab';
+      }
+    });
+
+    // *** TRANSPORT BUTTONS *** //
+    const queueButton = document.getElementById('queueButton');
+    const queueCaret = document.getElementById('queueCaret');
+    const queueDropdown = document.getElementById('queueDropdown');
+    const queueIcon = document.getElementById('queueIcon');
+    const queueLabel = document.getElementById('queueLabel');
+    queueCaret.addEventListener('click', (e) => {
+      e.stopPropagation();
+      queueDropdown.style.display = (queueDropdown.style.display === 'block') ? 'none' : 'block';
+    });
+    document.addEventListener('click', () => { queueDropdown.style.display = 'none'; });
+    queueDropdown.addEventListener('click', (e) => {
+      if (e.target.tagName.toLowerCase() === 'li') {
+        queueIcon.textContent = e.target.getAttribute('data-icon');
+        queueLabel.textContent = e.target.getAttribute('data-label');
+        queueDropdown.style.display = 'none';
+      }
+    });
+    document.getElementById('stopBtn').addEventListener('click', () => {
+      console.log('Stop clicked!');
+    });
+    document.getElementById('stopAllBtn').addEventListener('click', () => {
+      console.log('Stop All clicked!');
+    });
+    document.getElementById('batchInput').addEventListener('change', (e) => {
+      console.log('Batch size changed to:', e.target.value);
+    });
+
+    // *** TIMELINE CONTEXT MENU *** //
+    timeline.addEventListener('contextmenu', (e) => {
+      if (e.target.closest('.transport-node')) return;
+      if (e.target.closest('.primitive-node')) return;
+      if (e.target.closest('.note-node')) return;
+      if (e.target.closest('.load-audio-node')) return;
+      if (e.target.closest('.lane-node')) return;
+      e.preventDefault();
+      timelineMenu.style.display = 'block';
+      timelineMenu.style.left = e.clientX + 'px';
+      timelineMenu.style.top = e.clientY + 'px';
+    });
+    document.addEventListener('click', () => { timelineMenu.style.display = 'none'; });
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') timelineMenu.style.display = 'none';
+    });
+    document.getElementById('menuAddGroup').addEventListener('click', () => {
+      console.log('Add Group clicked');
+      timelineMenu.style.display = 'none';
+    });
+
+    // *** "Add Node" panel *** //
+    let isAddNodeDragging = false, addNodeOffsetX = 0, addNodeOffsetY = 0;
+    let isAddNodeExpanded = true;
+    addNodeHeader.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isAddNodeDragging = true;
+      const rect = addNodePanel.getBoundingClientRect();
+      addNodeOffsetX = e.clientX - rect.left;
+      addNodeOffsetY = e.clientY - rect.top;
+      addNodeHeader.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isAddNodeDragging) return;
+      addNodePanel.style.left = (e.clientX - addNodeOffsetX) + 'px';
+      addNodePanel.style.top = (e.clientY - addNodeOffsetY) + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isAddNodeDragging) {
+        isAddNodeDragging = false;
+        addNodeHeader.style.cursor = 'grab';
+      }
+    });
+    addNodeToggle.addEventListener('click', () => {
+      isAddNodeExpanded = !isAddNodeExpanded;
+      addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
+      addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
+    });
+    addNodeClose.addEventListener('click', () => {
+      addNodePanel.style.display = 'none';
+    });
+
+    // *** NODE CREATION *** //
+    addNodeSubmenu.addEventListener('click', (e) => {
+      if (e.target.tagName.toLowerCase() === 'li') {
+        const nodetype = e.target.getAttribute('data-nodetype');
+        const x = parseInt(timelineMenu.style.left) || 100;
+        const y = parseInt(timelineMenu.style.top) || 100;
+        if (nodetype === 'primitive') createPrimitiveNode(x, y);
+        else if (nodetype === 'note') createNoteNode(x, y);
+        else if (nodetype === 'loadaudio') createLoadAudioNode(x, y);
+        else if (nodetype === 'lane') createLaneNode(x, y);
+        timelineMenu.style.display = 'none';
+      }
+    });
+
+    /** Start ephemeral wire from a node circle. */
+    function startEphemeralWire(fromNode, fromPort, screenX, screenY) {
+      isDraggingWire = true;
+      wireFromNode = fromNode;
+      wireFromPort = fromPort;
+      wireStart = screenToContainerCoords(screenX, screenY);
+      ephemeralEnd = { x: wireStart.x, y: wireStart.y };
+      ephemeralWirePaths = [];
+      ephemeralWireLayers = [];
+
+      // Create ephemeral gradient
+      const tempGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+      tempGrad.setAttribute("id", "temp-grad");
+      tempGrad.setAttribute("gradientUnits", "userSpaceOnUse");
+      const stopA = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      stopA.setAttribute("offset", "0%");
+      let srcColor = getConnectionPointColor(fromNode.querySelector('.io-circle'));
+      stopA.setAttribute("stop-color", srcColor);
+      const stopB = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+      stopB.setAttribute("offset", "100%");
+      stopB.setAttribute("stop-color", srcColor);
+      tempGrad.appendChild(stopA);
+      tempGrad.appendChild(stopB);
+      svgDefs.appendChild(tempGrad);
+      ephemeralGradient = tempGrad;
+
+      // 3 ephemeral layers
+      for (let i = 0; i < 3; i++) {
+        const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
         path.classList.add('connection-path');
-        path.setAttribute("stroke", "url(#" + gradId + ")");
+        path.setAttribute("stroke", "url(#temp-grad)");
         connectionCanvas.appendChild(path);
-        permanentConn.pathEls.push(path);
-        permanentConn.layers.push({
+        ephemeralWirePaths.push(path);
+        ephemeralWireLayers.push({
           baseOffset: (Math.random() * 20) - 10,
           variationAmplitude: 5 + Math.random() * 5,
           phase: Math.random() * Math.PI * 2,
           baseWidth: 2 + Math.random() * 2,
           widthVariation: 1 + Math.random(),
-          opacity: (i === 2 ? 0.8 : 0.4)
+          opacity: 0.5
         });
       }
-      connections.push(permanentConn);
     }
-  }
 
-  // Remove ephemeral wire paths
-  ephemeralWirePaths.forEach(path => connectionCanvas.removeChild(path));
-  ephemeralWirePaths = [];
-  ephemeralWireLayers = [];
-});
-
-// *** ANIMATION LOOP *** //
-let globalTime = 0;
-function updateScene() {
-  globalTime++;
-
-  // Ephemeral wire
-  if (ephemeralWirePaths.length > 0) {
-    let x1 = wireStart.x, y1 = wireStart.y;
-    let x2 = ephemeralEnd.x, y2 = ephemeralEnd.y;
-    let dx = x2 - x1, dy = y2 - y1;
-    let len = Math.sqrt(dx*dx + dy*dy) || 1;
-    let perpX = -dy/len, perpY = dx/len;
-
-    ephemeralWirePaths.forEach((path, i) => {
-      let param = ephemeralWireLayers[i];
-      let offset = param.baseOffset + Math.sin((globalTime/20) + param.phase) * param.variationAmplitude;
-      let mx = (x1 + x2)*0.5, my = (y1 + y2)*0.5;
-      let cp_x = mx + perpX * offset;
-      let cp_y = my + perpY * offset;
-      let d = `M ${x1} ${y1} Q ${cp_x} ${cp_y} ${x2} ${y2}`;
-      path.setAttribute('d', d);
-
-      let width = param.baseWidth + Math.sin((globalTime/10) + param.phase) * param.widthVariation;
-      path.style.strokeWidth = width + 'px';
-      path.style.opacity = param.opacity;
+    document.addEventListener('mousemove', (e) => {
+      if (!isDraggingWire) return;
+      ephemeralEnd = screenToContainerCoords(e.clientX, e.clientY);
     });
-    if (ephemeralGradient) {
-      ephemeralGradient.setAttribute("x1", x1);
-      ephemeralGradient.setAttribute("y1", y1);
-      ephemeralGradient.setAttribute("x2", x2);
-      ephemeralGradient.setAttribute("y2", y2);
-    }
-  }
+    document.addEventListener('mouseup', (e) => {
+      if (!isDraggingWire) return;
+      isDraggingWire = false;
 
-  // Permanent connections
-  connections.forEach(conn => {
-    const outCircle = conn.fromNode.querySelector('.io-circle');
-    const inCircle = conn.toNode.querySelector('.io-circle');
-    if (!outCircle || !inCircle) return;
-
-    const { x: x1, y: y1 } = getCircleCenterInContainer(outCircle);
-    const { x: x2, y: y2 } = getCircleCenterInContainer(inCircle);
-    const dx = x2 - x1, dy = y2 - y1;
-    const len = Math.sqrt(dx*dx + dy*dy) || 1;
-    const perpX = -dy/len, perpY = dx/len;
-
-    conn.layers.forEach((param, i) => {
-      let pathEl = conn.pathEls[i];
-      let offset = param.baseOffset + Math.sin((globalTime/20) + param.phase) * param.variationAmplitude;
-      let mx = (x1 + x2)*0.5, my = (y1 + y2)*0.5;
-      let cp_x = mx + perpX * offset;
-      let cp_y = my + perpY * offset;
-      let d = `M ${x1} ${y1} Q ${cp_x} ${cp_y} ${x2} ${y2}`;
-      pathEl.setAttribute('d', d);
-
-      let width = param.baseWidth + Math.sin((globalTime/10) + param.phase) * param.widthVariation;
-      pathEl.style.strokeWidth = width + 'px';
-      pathEl.style.opacity = param.opacity;
-    });
-    if (conn.gradientEl) {
-      conn.gradientEl.setAttribute("x1", x1);
-      conn.gradientEl.setAttribute("y1", y1);
-      conn.gradientEl.setAttribute("x2", x2);
-      conn.gradientEl.setAttribute("y2", y2);
-      conn.gradientEl.firstChild.setAttribute("stop-color", getConnectionPointColor(outCircle));
-      conn.gradientEl.lastChild.setAttribute("stop-color", getConnectionPointColor(inCircle));
-    }
-  });
-
-  // Lane waveforms
-  connections.forEach(conn => {
-    if (!conn.toNode || !conn.toNode.classList.contains('lane-node')) return;
-    if (!conn.fromNode || !conn.fromNode.classList.contains('load-audio-node')) return;
-    const lane = conn.toNode;
-    const loadAudio = conn.fromNode;
-    const canvas = lane.querySelector('canvas');
-    const noInput = lane.querySelector('.lane-noinput');
-    if (loadAudio._audioBuffer) {
-      noInput.style.display = 'none';
-      const rect = canvas.getBoundingClientRect();
-      if (canvas.width !== Math.floor(rect.width) || canvas.height !== Math.floor(rect.height)) {
-        canvas.width = Math.floor(rect.width);
-        canvas.height = Math.floor(rect.height);
+      // Remove ephemeral gradient
+      if (ephemeralGradient) {
+        svgDefs.removeChild(ephemeralGradient);
+        ephemeralGradient = null;
       }
-      drawWaveform(canvas, loadAudio._audioBuffer);
-    } else {
-      noInput.style.display = 'block';
-      noInput.textContent = 'No audio loaded';
-    }
-  });
+      // Check drop target
+      const dropTarget = document.elementFromPoint(e.clientX, e.clientY);
+      if (dropTarget && dropTarget.classList.contains('io-circle')) {
+        const targetNode = dropTarget.closest('.lane-node');
+        if (targetNode) {
+          const permanentGrad = document.createElementNS('http://www.w3.org/2000/svg', 'linearGradient');
+          const gradId = "grad-" + (gradientIdCounter++);
+          permanentGrad.setAttribute("id", gradId);
+          permanentGrad.setAttribute("gradientUnits", "userSpaceOnUse");
+          const stop1 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop1.setAttribute("offset", "0%");
+          let sourceCircle = wireFromNode.querySelector('.io-circle');
+          stop1.setAttribute("stop-color", getConnectionPointColor(sourceCircle));
+          const stop2 = document.createElementNS('http://www.w3.org/2000/svg', 'stop');
+          stop2.setAttribute("offset", "100%");
+          stop2.setAttribute("stop-color", getConnectionPointColor(dropTarget));
+          permanentGrad.appendChild(stop1);
+          permanentGrad.appendChild(stop2);
+          svgDefs.appendChild(permanentGrad);
 
-  requestAnimationFrame(updateScene);
-}
-requestAnimationFrame(updateScene);
+          let permanentConn = {
+            fromNode: wireFromNode,
+            fromPort: 'output',
+            toNode: targetNode,
+            toPort: 'input',
+            gradientEl: permanentGrad,
+            gradientId: gradId,
+            layers: [],
+            pathEls: []
+          };
+          for (let i = 0; i < 5; i++) {
+            let path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.classList.add('connection-path');
+            path.setAttribute("stroke", "url(#" + gradId + ")");
+            connectionCanvas.appendChild(path);
+            permanentConn.pathEls.push(path);
+            permanentConn.layers.push({
+              baseOffset: (Math.random() * 20) - 10,
+              variationAmplitude: 5 + Math.random() * 5,
+              phase: Math.random() * Math.PI * 2,
+              baseWidth: 2 + Math.random() * 2,
+              widthVariation: 1 + Math.random(),
+              opacity: (i === 2 ? 0.8 : 0.4)
+            });
+          }
+          connections.push(permanentConn);
+        }
+      }
 
-/** Draw a waveform from an AudioBuffer on the lane's canvas. */
-function drawWaveform(canvas, audioBuffer) {
-  const ctx = canvas.getContext('2d');
-  const w = canvas.width, h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#222';
-  ctx.fillRect(0, 0, w, h);
-  const chanData = audioBuffer.getChannelData(0);
-  const step = Math.floor(chanData.length / w);
-  const center = h * 0.5;
-  ctx.strokeStyle = '#ffbbbb';
-  ctx.beginPath();
-  ctx.moveTo(0, center);
-  for (let i = 0; i < w; i++) {
-    const idx = i * step;
-    const sampleVal = chanData[idx] || 0;
-    const y = center + sampleVal * center;
-    ctx.lineTo(i, y);
-  }
-  ctx.stroke();
-}
+      ephemeralWirePaths.forEach(path => connectionCanvas.removeChild(path));
+      ephemeralWirePaths = [];
+      ephemeralWireLayers = [];
+    });
 
-// *** CREATE NODES *** //
-function createPrimitiveNode(screenX, screenY) {
-  const node = document.createElement('div');
-  node.className = 'primitive-node';
-  node.style.width = '140px';
-  // Convert creation point to container coords
-  const { x, y } = screenToContainerCoords(screenX, screenY);
-  node.style.left = x + 'px';
-  node.style.top = y + 'px';
+    // *** ANIMATION LOOP *** //
+    let globalTime = 0;
+    function updateScene() {
+      globalTime++;
 
-  const header = document.createElement('div');
-  header.className = 'primitive-header';
-  header.textContent = 'Primitive';
-  node.appendChild(header);
+      // Ephemeral wire
+      if (ephemeralWirePaths.length > 0) {
+        let x1 = wireStart.x, y1 = wireStart.y;
+        let x2 = ephemeralEnd.x, y2 = ephemeralEnd.y;
+        let dx = x2 - x1, dy = y2 - y1;
+        let len = Math.sqrt(dx*dx + dy*dy) || 1;
+        let perpX = -dy/len, perpY = dx/len;
 
-  const body = document.createElement('div');
-  body.className = 'primitive-body';
-  body.textContent = '(No real audio logic)';
-  node.appendChild(body);
+        ephemeralWirePaths.forEach((path, i) => {
+          let param = ephemeralWireLayers[i];
+          let offset = param.baseOffset + Math.sin((globalTime/20) + param.phase) * param.variationAmplitude;
+          let mx = (x1 + x2)*0.5, my = (y1 + y2)*0.5;
+          let cp_x = mx + perpX * offset;
+          let cp_y = my + perpY * offset;
+          let d = `M ${x1} ${y1} Q ${cp_x} ${cp_y} ${x2} ${y2}`;
+          path.setAttribute('d', d);
+          let width = param.baseWidth + Math.sin((globalTime/10) + param.phase) * param.widthVariation;
+          path.style.strokeWidth = width + 'px';
+          path.style.opacity = param.opacity;
+        });
+        if (ephemeralGradient) {
+          ephemeralGradient.setAttribute("x1", x1);
+          ephemeralGradient.setAttribute("y1", y1);
+          ephemeralGradient.setAttribute("x2", x2);
+          ephemeralGradient.setAttribute("y2", y2);
+        }
+      }
 
-  const output = document.createElement('div');
-  output.classList.add('primitive-output', 'io-circle');
-  node.appendChild(output);
+      // Permanent connections
+      connections.forEach(conn => {
+        const outCircle = conn.fromNode.querySelector('.io-circle');
+        const inCircle = conn.toNode.querySelector('.io-circle');
+        if (!outCircle || !inCircle) return;
+        const { x: x1, y: y1 } = getCircleCenterInContainer(outCircle);
+        const { x: x2, y: y2 } = getCircleCenterInContainer(inCircle);
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.sqrt(dx*dx + dy*dy) || 1;
+        const perpX = -dy/len, perpY = dx/len;
 
-  nodeLayer.appendChild(node);
-
-  // Drag
-  let isDrag = false, offsetX = 0, offsetY = 0;
-  header.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    isDrag = true;
-    const cPos = screenToContainerCoords(e.clientX, e.clientY);
-    const nodeLeft = parseFloat(node.style.left) || 0;
-    const nodeTop = parseFloat(node.style.top) || 0;
-    offsetX = cPos.x - nodeLeft;
-    offsetY = cPos.y - nodeTop;
-    node.style.zIndex = '1000';
-  });
-  document.addEventListener('mousemove', (e2) => {
-    if (!isDrag) return;
-    const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
-    node.style.left = (cPos.x - offsetX) + 'px';
-    node.style.top = (cPos.y - offsetY) + 'px';
-  });
-  document.addEventListener('mouseup', () => {
-    if (isDrag) {
-      isDrag = false;
-      node.style.zIndex = 'auto';
-    }
-  });
-
-  // Wire
-  output.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    startEphemeralWire(node, 'output', e.clientX, e.clientY);
-  });
-}
-
-function createNoteNode(screenX, screenY) {
-  const note = document.createElement('div');
-  note.className = 'note-node';
-  note.style.width = '160px';
-  note.style.height = '120px';
-  const { x, y } = screenToContainerCoords(screenX, screenY);
-  note.style.left = x + 'px';
-  note.style.top = y + 'px';
-
-  const noteHeader = document.createElement('div');
-  noteHeader.className = 'note-header';
-  noteHeader.textContent = ' '; // just to show background
-  note.appendChild(noteHeader);
-
-  const noteContent = document.createElement('div');
-  noteContent.className = 'note-content';
-  noteContent.contentEditable = 'true';
-  noteContent.innerText = '(Type your note here...)';
-  note.appendChild(noteContent);
-
-  nodeLayer.appendChild(note);
-
-  let isDrag = false, offsetX = 0, offsetY = 0;
-  noteHeader.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    isDrag = true;
-    const cPos = screenToContainerCoords(e.clientX, e.clientY);
-    const nLeft = parseFloat(note.style.left) || 0;
-    const nTop = parseFloat(note.style.top) || 0;
-    offsetX = cPos.x - nLeft;
-    offsetY = cPos.y - nTop;
-    note.style.zIndex = '1000';
-  });
-  document.addEventListener('mousemove', (e2) => {
-    if (!isDrag) return;
-    const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
-    note.style.left = (cPos.x - offsetX) + 'px';
-    note.style.top = (cPos.y - offsetY) + 'px';
-  });
-  document.addEventListener('mouseup', () => {
-    if (isDrag) {
-      isDrag = false;
-      note.style.zIndex = 'auto';
-    }
-  });
-}
-
-function createLoadAudioNode(screenX, screenY) {
-  const node = document.createElement('div');
-  node.className = 'load-audio-node';
-  node.style.width = '180px';
-  const { x, y } = screenToContainerCoords(screenX, screenY);
-  node.style.left = x + 'px';
-  node.style.top = y + 'px';
-
-  node._audioBuffer = null;
-
-  const header = document.createElement('div');
-  header.className = 'load-audio-header';
-  node.appendChild(header);
-
-  const output = document.createElement('div');
-  output.classList.add('load-audio-output', 'io-circle');
-  node.appendChild(output);
-
-  const content = document.createElement('div');
-  content.className = 'load-audio-content';
-  node.appendChild(content);
-
-  const btnRow = document.createElement('div');
-  btnRow.className = 'load-audio-buttons';
-
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.accept = 'audio/*';
-  fileInput.style.display = 'none';
-  node.appendChild(fileInput);
-
-  const btnUpload = document.createElement('button');
-  btnUpload.textContent = 'upload';
-  btnUpload.style.cursor = 'pointer';
-  btnUpload.addEventListener('click', () => {
-    fileInput.click();
-  });
-  fileInput.addEventListener('change', async (e) => {
-    if (!fileInput.files || fileInput.files.length < 1) return;
-    const file = fileInput.files[0];
-    info.textContent = 'loading ' + file.name + ' ...';
-    try {
-      const arrayBuf = await file.arrayBuffer();
-      audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
-        node._audioBuffer = audioBuf;
-        info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
-      }, (err) => {
-        console.error(err);
-        info.textContent = 'error decoding audio';
+        conn.layers.forEach((param, i) => {
+          let pathEl = conn.pathEls[i];
+          let offset = param.baseOffset + Math.sin((globalTime/20) + param.phase) * param.variationAmplitude;
+          let mx = (x1 + x2)*0.5, my = (y1 + y2)*0.5;
+          let cp_x = mx + perpX * offset;
+          let cp_y = my + perpY * offset;
+          let d = `M ${x1} ${y1} Q ${cp_x} ${cp_y} ${x2} ${y2}`;
+          pathEl.setAttribute('d', d);
+          let width = param.baseWidth + Math.sin((globalTime/10) + param.phase) * param.widthVariation;
+          pathEl.style.strokeWidth = width + 'px';
+          pathEl.style.opacity = param.opacity;
+        });
+        if (conn.gradientEl) {
+          conn.gradientEl.setAttribute("x1", x1);
+          conn.gradientEl.setAttribute("y1", y1);
+          conn.gradientEl.setAttribute("x2", x2);
+          conn.gradientEl.setAttribute("y2", y2);
+          conn.gradientEl.firstChild.setAttribute("stop-color", getConnectionPointColor(outCircle));
+          conn.gradientEl.lastChild.setAttribute("stop-color", getConnectionPointColor(inCircle));
+        }
       });
-    } catch (err) {
-      console.error(err);
-      info.textContent = 'error reading file';
+
+      // Lane waveforms
+      connections.forEach(conn => {
+        if (!conn.toNode || !conn.toNode.classList.contains('lane-node')) return;
+        if (!conn.fromNode || !conn.fromNode.classList.contains('load-audio-node')) return;
+        const lane = conn.toNode;
+        const loadAudio = conn.fromNode;
+        const canvas = lane.querySelector('canvas');
+        const noInput = lane.querySelector('.lane-noinput');
+        if (loadAudio._audioBuffer) {
+          noInput.style.display = 'none';
+          const rect = canvas.getBoundingClientRect();
+          if (canvas.width !== Math.floor(rect.width) || canvas.height !== Math.floor(rect.height)) {
+            canvas.width = Math.floor(rect.width);
+            canvas.height = Math.floor(rect.height);
+          }
+          drawWaveform(canvas, loadAudio._audioBuffer);
+        } else {
+          noInput.style.display = 'block';
+          noInput.textContent = 'No audio loaded';
+        }
+      });
+
+      requestAnimationFrame(updateScene);
     }
-  });
+    requestAnimationFrame(updateScene);
 
-  btnRow.appendChild(btnUpload);
-  content.appendChild(btnRow);
-
-  const info = document.createElement('div');
-  info.className = 'load-audio-info';
-  info.textContent = '(no file loaded)';
-  content.appendChild(info);
-
-  nodeLayer.appendChild(node);
-
-  let isDrag = false, offsetX = 0, offsetY = 0;
-  header.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    isDrag = true;
-    const cPos = screenToContainerCoords(e.clientX, e.clientY);
-    const nLeft = parseFloat(node.style.left) || 0;
-    const nTop = parseFloat(node.style.top) || 0;
-    offsetX = cPos.x - nLeft;
-    offsetY = cPos.y - nTop;
-    node.style.zIndex = '1000';
-  });
-  document.addEventListener('mousemove', (e2) => {
-    if (!isDrag) return;
-    const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
-    node.style.left = (cPos.x - offsetX) + 'px';
-    node.style.top = (cPos.y - offsetY) + 'px';
-  });
-  document.addEventListener('mouseup', () => {
-    if (isDrag) {
-      isDrag = false;
-      node.style.zIndex = 'auto';
+    /** Draw a waveform from an AudioBuffer on the lane's canvas. */
+    function drawWaveform(canvas, audioBuffer) {
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width, h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = '#222';
+      ctx.fillRect(0, 0, w, h);
+      const chanData = audioBuffer.getChannelData(0);
+      const step = Math.floor(chanData.length / w);
+      const center = h * 0.5;
+      ctx.strokeStyle = '#ffbbbb';
+      ctx.beginPath();
+      ctx.moveTo(0, center);
+      for (let i = 0; i < w; i++) {
+        const idx = i * step;
+        const sampleVal = chanData[idx] || 0;
+        const y = center + sampleVal * center;
+        ctx.lineTo(i, y);
+      }
+      ctx.stroke();
     }
-  });
 
-  output.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    e.stopPropagation();
-    startEphemeralWire(node, 'output', e.clientX, e.clientY);
-  });
-}
-
-function createLaneNode(screenX, screenY) {
-  const lane = document.createElement('div');
-  lane.className = 'lane-node';
-  lane.style.width = '400px'; lane.style.height = '100px';
-  const { x, y } = screenToContainerCoords(screenX, screenY);
-  lane.style.left = x + 'px';
-  lane.style.top = y + 'px';
-
-  const header = document.createElement('div');
-  header.className = 'lane-header';
-  lane.appendChild(header);
-
-  const inputCircle = document.createElement('div');
-  inputCircle.classList.add('lane-input', 'io-circle');
-  lane.appendChild(inputCircle);
-
-  const canvas = document.createElement('canvas');
-  canvas.className = 'lane-waveform-canvas';
-  lane.appendChild(canvas);
-
-  const noInput = document.createElement('div');
-  noInput.className = 'lane-noinput';
-  noInput.textContent = 'No input connected';
-  lane.appendChild(noInput);
-
-  nodeLayer.appendChild(lane);
-
-  let isDrag = false, offsetX = 0, offsetY = 0;
-  header.addEventListener('mousedown', (e) => {
-    if (e.button !== 0) return;
-    isDrag = true;
-    const cPos = screenToContainerCoords(e.clientX, e.clientY);
-    const nLeft = parseFloat(lane.style.left) || 0;
-    const nTop = parseFloat(lane.style.top) || 0;
-    offsetX = cPos.x - nLeft;
-    offsetY = cPos.y - nTop;
-    lane.style.zIndex = '1000';
-  });
-  document.addEventListener('mousemove', (e2) => {
-    if (!isDrag) return;
-    const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
-    lane.style.left = (cPos.x - offsetX) + 'px';
-    lane.style.top = (cPos.y - offsetY) + 'px';
-  });
-  document.addEventListener('mouseup', () => {
-    if (isDrag) {
-      isDrag = false;
-      lane.style.zIndex = 'auto';
+    // *** CREATE NODES *** //
+    function createPrimitiveNode(screenX, screenY) {
+      const node = document.createElement('div');
+      node.className = 'primitive-node';
+      node.style.width = '140px';
+      const { x, y } = screenToContainerCoords(screenX, screenY);
+      node.style.left = x + 'px';
+      node.style.top = y + 'px';
+      const header = document.createElement('div');
+      header.className = 'primitive-header';
+      header.textContent = 'Primitive';
+      node.appendChild(header);
+      const body = document.createElement('div');
+      body.className = 'primitive-body';
+      body.textContent = '(No real audio logic)';
+      node.appendChild(body);
+      const output = document.createElement('div');
+      output.classList.add('primitive-output', 'io-circle');
+      node.appendChild(output);
+      nodeLayer.appendChild(node);
+      let isDrag = false, offsetX = 0, offsetY = 0;
+      header.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isDrag = true;
+        const cPos = screenToContainerCoords(e.clientX, e.clientY);
+        const nodeLeft = parseFloat(node.style.left) || 0;
+        const nodeTop = parseFloat(node.style.top) || 0;
+        offsetX = cPos.x - nodeLeft;
+        offsetY = cPos.y - nodeTop;
+        node.style.zIndex = '1000';
+      });
+      document.addEventListener('mousemove', (e2) => {
+        if (!isDrag) return;
+        const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
+        node.style.left = (cPos.x - offsetX) + 'px';
+        node.style.top = (cPos.y - offsetY) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (isDrag) {
+          isDrag = false;
+          node.style.zIndex = 'auto';
+        }
+      });
+      output.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        startEphemeralWire(node, 'output', e.clientX, e.clientY);
+      });
     }
-  });
-}
 
-// *** DOUBLE‐CLICK TO CHANGE CIRCLE COLOR *** //
-document.addEventListener('dblclick', (e) => {
-  if (!e.target.classList.contains('io-circle')) return;
-  let current = e.target.dataset.connColor || window.getComputedStyle(e.target).backgroundColor;
-  if (current.startsWith("rgb")) { current = rgbToHex(current); }
-  let input = prompt("Enter 6-digit hex color (without #)", current.replace("#", ""));
-  if (input && /^[0-9A-Fa-f]{6}$/.test(input)) {
-    input = "#" + input;
-    e.target.dataset.connColor = input;
-    e.target.style.backgroundColor = input;
-    e.target.style.borderColor = shadeColor(input, -20);
-  }
-});
+    function createNoteNode(screenX, screenY) {
+      const note = document.createElement('div');
+      note.className = 'note-node';
+      note.style.width = '160px';
+      note.style.height = '120px';
+      const { x, y } = screenToContainerCoords(screenX, screenY);
+      note.style.left = x + 'px';
+      note.style.top = y + 'px';
+      const noteHeader = document.createElement('div');
+      noteHeader.className = 'note-header';
+      noteHeader.textContent = ' ';
+      note.appendChild(noteHeader);
+      const noteContent = document.createElement('div');
+      noteContent.className = 'note-content';
+      noteContent.contentEditable = 'true';
+      noteContent.innerText = '(Type your note here...)';
+      note.appendChild(noteContent);
+      nodeLayer.appendChild(note);
+      let isDrag = false, offsetX = 0, offsetY = 0;
+      noteHeader.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isDrag = true;
+        const cPos = screenToContainerCoords(e.clientX, e.clientY);
+        const nLeft = parseFloat(note.style.left) || 0;
+        const nTop = parseFloat(note.style.top) || 0;
+        offsetX = cPos.x - nLeft;
+        offsetY = cPos.y - nTop;
+        note.style.zIndex = '1000';
+      });
+      document.addEventListener('mousemove', (e2) => {
+        if (!isDrag) return;
+        const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
+        note.style.left = (cPos.x - offsetX) + 'px';
+        note.style.top = (cPos.y - offsetY) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (isDrag) {
+          isDrag = false;
+          note.style.zIndex = 'auto';
+        }
+      });
+    }
 
-/** Convert "rgb(...)" => "#rrggbb". */
-function rgbToHex(rgb) {
-  const result = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(rgb);
-  return result ? "#" +
-    ("0" + parseInt(result[1], 10).toString(16)).slice(-2) +
-    ("0" + parseInt(result[2], 10).toString(16)).slice(-2) +
-    ("0" + parseInt(result[3], 10).toString(16)).slice(-2)
-    : rgb;
-}
-/** Lighten/darken color by percent. Negative => darken. */
-function shadeColor(color, percent) {
-  let num = parseInt(color.slice(1), 16),
-      amt = Math.round(2.55 * percent),
-      R = (num >> 16) + amt,
-      G = (num >> 8 & 0x00FF) + amt,
-      B = (num & 0x0000FF) + amt;
-  return "#" + (
-    0x1000000 +
-    (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
-    (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
-    (B < 255 ? (B < 1 ? 0 : B) : 255)
-  ).toString(16).slice(-6);
-}
+    function createLoadAudioNode(screenX, screenY) {
+      const node = document.createElement('div');
+      node.className = 'load-audio-node';
+      node.style.width = '180px';
+      const { x, y } = screenToContainerCoords(screenX, screenY);
+      node.style.left = x + 'px';
+      node.style.top = y + 'px';
+      node._audioBuffer = null;
+      const header = document.createElement('div');
+      header.className = 'load-audio-header';
+      node.appendChild(header);
+      const output = document.createElement('div');
+      output.classList.add('load-audio-output', 'io-circle');
+      node.appendChild(output);
+      const content = document.createElement('div');
+      content.className = 'load-audio-content';
+      node.appendChild(content);
+      const btnRow = document.createElement('div');
+      btnRow.className = 'load-audio-buttons';
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = 'audio/*';
+      fileInput.style.display = 'none';
+      node.appendChild(fileInput);
+      const btnUpload = document.createElement('button');
+      btnUpload.textContent = 'upload';
+      btnUpload.style.cursor = 'pointer';
+      btnUpload.addEventListener('click', () => {
+        fileInput.click();
+      });
+      fileInput.addEventListener('change', async (e) => {
+        if (!fileInput.files || fileInput.files.length < 1) return;
+        const file = fileInput.files[0];
+        info.textContent = 'loading ' + file.name + ' ...';
+        try {
+          const arrayBuf = await file.arrayBuffer();
+          audioCtx.decodeAudioData(arrayBuf, (audioBuf) => {
+            node._audioBuffer = audioBuf;
+            info.textContent = 'loaded: ' + file.name + ' (' + audioBuf.duration.toFixed(2) + 's)';
+          }, (err) => {
+            console.error(err);
+            info.textContent = 'error decoding audio';
+          });
+        } catch (err) {
+          console.error(err);
+          info.textContent = 'error reading file';
+        }
+      });
+      btnRow.appendChild(btnUpload);
+      content.appendChild(btnRow);
+      const info = document.createElement('div');
+      info.className = 'load-audio-info';
+      info.textContent = '(no file loaded)';
+      content.appendChild(info);
+      nodeLayer.appendChild(node);
+      let isDrag = false, offsetX = 0, offsetY = 0;
+      header.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isDrag = true;
+        const cPos = screenToContainerCoords(e.clientX, e.clientY);
+        const nLeft = parseFloat(node.style.left) || 0;
+        const nTop = parseFloat(node.style.top) || 0;
+        offsetX = cPos.x - nLeft;
+        offsetY = cPos.y - nTop;
+        node.style.zIndex = '1000';
+      });
+      document.addEventListener('mousemove', (e2) => {
+        if (!isDrag) return;
+        const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
+        node.style.left = (cPos.x - offsetX) + 'px';
+        node.style.top = (cPos.y - offsetY) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (isDrag) {
+          isDrag = false;
+          node.style.zIndex = 'auto';
+        }
+      });
+      output.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation();
+        startEphemeralWire(node, 'output', e.clientX, e.clientY);
+      });
+    }
 
-// Init
-updatePanZoomTransform();
-</script>
+    function createLaneNode(screenX, screenY) {
+      const lane = document.createElement('div');
+      lane.className = 'lane-node';
+      lane.style.width = '400px'; lane.style.height = '100px';
+      const { x, y } = screenToContainerCoords(screenX, screenY);
+      lane.style.left = x + 'px';
+      lane.style.top = y + 'px';
+      const header = document.createElement('div');
+      header.className = 'lane-header';
+      lane.appendChild(header);
+      const inputCircle = document.createElement('div');
+      inputCircle.classList.add('lane-input', 'io-circle');
+      lane.appendChild(inputCircle);
+      const canvas = document.createElement('canvas');
+      canvas.className = 'lane-waveform-canvas';
+      lane.appendChild(canvas);
+      const noInput = document.createElement('div');
+      noInput.className = 'lane-noinput';
+      noInput.textContent = 'No input connected';
+      lane.appendChild(noInput);
+      nodeLayer.appendChild(lane);
+      let isDrag = false, offsetX = 0, offsetY = 0;
+      header.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isDrag = true;
+        const cPos = screenToContainerCoords(e.clientX, e.clientY);
+        const nLeft = parseFloat(lane.style.left) || 0;
+        const nTop = parseFloat(lane.style.top) || 0;
+        offsetX = cPos.x - nLeft;
+        offsetY = cPos.y - nTop;
+        lane.style.zIndex = '1000';
+      });
+      document.addEventListener('mousemove', (e2) => {
+        if (!isDrag) return;
+        const cPos = screenToContainerCoords(e2.clientX, e2.clientY);
+        lane.style.left = (cPos.x - offsetX) + 'px';
+        lane.style.top = (cPos.y - offsetY) + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        if (isDrag) {
+          isDrag = false;
+          lane.style.zIndex = 'auto';
+        }
+      });
+    }
+
+    // *** DOUBLE‐CLICK TO CHANGE CIRCLE COLOR *** //
+    document.addEventListener('dblclick', (e) => {
+      if (!e.target.classList.contains('io-circle')) return;
+      let current = e.target.dataset.connColor || window.getComputedStyle(e.target).backgroundColor;
+      if (current.startsWith("rgb")) { current = rgbToHex(current); }
+      let input = prompt("Enter 6-digit hex color (without #)", current.replace("#", ""));
+      if (input && /^[0-9A-Fa-f]{6}$/.test(input)) {
+        input = "#" + input;
+        e.target.dataset.connColor = input;
+        e.target.style.backgroundColor = input;
+        e.target.style.borderColor = shadeColor(input, -20);
+      }
+    });
+
+    function rgbToHex(rgb) {
+      const result = /^rgba?\((\d+),\s*(\d+),\s*(\d+)/i.exec(rgb);
+      return result ? "#" +
+        ("0" + parseInt(result[1], 10).toString(16)).slice(-2) +
+        ("0" + parseInt(result[2], 10).toString(16)).slice(-2) +
+        ("0" + parseInt(result[3], 10).toString(16)).slice(-2)
+        : rgb;
+    }
+    function shadeColor(color, percent) {
+      let num = parseInt(color.slice(1), 16),
+          amt = Math.round(2.55 * percent),
+          R = (num >> 16) + amt,
+          G = (num >> 8 & 0x00FF) + amt,
+          B = (num & 0x0000FF) + amt;
+      return "#" + (
+        0x1000000 +
+        (R < 255 ? (R < 1 ? 0 : R) : 255) * 0x10000 +
+        (G < 255 ? (G < 1 ? 0 : G) : 255) * 0x100 +
+        (B < 255 ? (B < 1 ? 0 : B) : 255)
+      ).toString(16).slice(-6);
+    }
+
+    // *** SPARKLE EFFECT ***
+    function createSparkle() {
+      const sparkle = document.createElement('div');
+      sparkle.classList.add('sparkle');
+      sparkle.style.left = Math.random() * window.innerWidth + 'px';
+      sparkle.style.top = Math.random() * window.innerHeight + 'px';
+      document.getElementById('sparkles').appendChild(sparkle);
+      setTimeout(() => {
+        sparkle.remove();
+      }, 1000);
+    }
+    setInterval(createSparkle, 200);
+
+    // Init
+    updatePanZoomTransform();
+  </script>
 </body>
 </html>
