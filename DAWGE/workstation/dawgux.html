@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Oxblood DAW + Transport + Right-Click Menu + Add Node Window (Ruby Tabs)</title>
+  <title>Oxblood DAW – Primitive Nodes</title>
   <style>
     :root {
       /* Oxblood background */
@@ -21,12 +20,9 @@
       
       /* Darker version of timeline color for the outer grid lines */
       --timeline-dark: 67, 22, 22;
-      
-      /* Inner grid color: a shade between timeline-dark and the timeline base.
-         (Outer grid lines use opacity 0.7; here we use 0.5 so the inner lines are lighter.) */
       --inner-grid-opacity: 0.5;
 
-      /* Ruby-ish reds for the transport, menus, popups, and now the tabs */
+      /* Ruby-ish reds for transport, menus, popups, nodes */
       --ruby-bg: #701010;
       --ruby-border: #500000;
       --ruby-hover: #803030;
@@ -34,19 +30,14 @@
       --ruby-muted: #c0c0c0;
       --ruby-disabled: #999;
     }
-
     * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
+      margin: 0; padding: 0; box-sizing: border-box;
     }
 
-    /* Main layout controlled dynamically by JS */
     body {
       background: radial-gradient(circle at center, var(--bg-center), var(--bg-edge));
       display: grid;
-      width: 100vw; 
-      height: 100vh;
+      width: 100vw; height: 100vh;
       grid-template-columns: 20% 80%;
       grid-template-rows: 70% 30%;
       grid-template-areas:
@@ -54,31 +45,24 @@
         "sample fxchain";
       overflow: hidden;
       font-family: sans-serif;
-      user-select: none; /* prevents accidental text selection during dragging */
+      user-select: none; /* helps reduce text selection while dragging */
       color: var(--ruby-text);
     }
 
-    /* Sample Manager (left column) */
+    /* SAMPLE MANAGER (left) */
     .sample-container {
       grid-area: sample;
       position: relative;
-      overflow: visible;
       background: #222;
     }
     .sample-manager {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
       background: var(--sample-color);
       border-radius: 8px;
       box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.2rem;
-      color: white;
+      display: flex; align-items: center; justify-content: center;
+      color: white; font-size: 1.2rem;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .sample-manager::before {
@@ -90,20 +74,15 @@
     }
     .sample-manager.hidden::before {
       position: absolute;
-      left: 0;
-      top: 50%;
+      left: 0; top: 50%;
       transform: translate(calc(-100% + 180px), -50%) rotate(90deg);
       transform-origin: left center;
       white-space: nowrap;
     }
-
-    /* Sample tab – now using Ruby colors */
     .sample-tab {
       position: absolute;
-      top: 0;
-      left: 0;
-      width: 20px;
-      height: 40px;
+      top: 0; left: 0;
+      width: 20px; height: 40px;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 0 0 8px 0;
@@ -111,9 +90,7 @@
       cursor: pointer;
       color: var(--ruby-text);
       font-size: 0.8rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       z-index: 10;
     }
     .sample-tab:hover {
@@ -126,59 +103,68 @@
       content: "→";
     }
 
-    /* Timeline (top-right) */
+    /* TIMELINE (top-right) */
     .timeline {
       grid-area: timeline;
-      position: relative; /* For absolute positioning of child elements */
+      position: relative; /* so we can absolutely-position child elements */
       background: var(--timeline-color);
       border-radius: 8px;
-      margin-left: 10px;
+      margin-left: 10px; 
       margin-bottom: 10px;
       box-shadow:
         inset 4px 4px 8px rgba(var(--bevel-dark-rgb),1),
         inset -4px -4px 8px rgba(var(--bevel-light-rgb),0.5),
         0 4px 6px rgba(0,0,0,0.7);
       transition: margin 0.5s ease, box-shadow 0.5s ease;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.2rem;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; color: white;
       cursor: grab;
-      color: white;
-      /* Grid lines for timeline */
+      /* Grid lines */
       background-image: 
         linear-gradient(90deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
         linear-gradient(0deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
         linear-gradient(90deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px),
         linear-gradient(0deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px);
       background-position: 0 0;
-      /* background-size controlled via JS (zoom) */
     }
     .timeline::before {
       content: "TIMELINE";
     }
 
-    /* FX Chain (bottom-right) */
+    /* We'll have a container for nodes and an SVG for wires */
+    .node-layer {
+      position: absolute; 
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      overflow: visible;
+      pointer-events: none; /* let clicks pass through to timeline (unless on a node) */
+    }
+    /* We'll place an <svg> for ephemeral wires behind or above the nodes. 
+       pointer-events: none so it doesn't interfere with node dragging. */
+    #connectionCanvas {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      overflow: visible;
+      z-index: 500; /* behind the node divs, or you can reorder if you like */
+    }
+
+    /* FX CHAIN (bottom-right) */
     .fxchain-container {
       grid-area: fxchain;
       position: relative;
-      overflow: visible;
       background: #222;
     }
     .fx-chain {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
+      position: absolute; 
+      top: 0; left: 0;
+      width: 100%; height: 100%;
       background: var(--fxchain-color);
       border-radius: 8px;
       box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 1.2rem;
-      color: white;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 1.2rem; color: white;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .fx-chain::before {
@@ -188,15 +174,11 @@
       transform: translateY(100%);
       opacity: 0.4;
     }
-
-    /* FX tab – now using Ruby colors */
     .fx-tab {
       position: absolute;
-      top: 0;
-      left: 50%;
+      top: 0; left: 50%;
       transform: translate(-50%, -40px);
-      width: 80px;
-      height: 20px;
+      width: 80px; height: 20px;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 8px 8px 0 0;
@@ -204,9 +186,7 @@
       cursor: pointer;
       color: var(--ruby-text);
       font-size: 0.8rem;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: flex; align-items: center; justify-content: center;
       z-index: 10;
     }
     .fx-tab:hover {
@@ -219,14 +199,11 @@
       content: "↑";
     }
 
-    /* =============== Transport Node (Ruby Style) =============== */
+    /* TRANSPORT NODE (ruby style) */
     .transport-node {
       position: absolute;
-      /* Left-align inside timeline */
-      top: 40px;
-      left: 10px;
-      display: flex;
-      align-items: center;
+      top: 40px; left: 10px;
+      display: flex; align-items: center;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 6px;
@@ -241,19 +218,15 @@
       cursor: grab;
       margin-right: 8px;
       color: var(--ruby-muted);
-      display: flex;
-      align-items: center;
+      display: flex; align-items: center;
       padding: 0 4px;
     }
     .transport-handle:hover {
       color: #fff;
     }
-
-    /* Queue button (icon, label, caret) */
     .queue-button {
       position: relative;
-      display: flex;
-      align-items: center;
+      display: flex; align-items: center;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
@@ -279,8 +252,7 @@
     }
     .queue-dropdown {
       position: absolute;
-      top: 100%;
-      left: 0;
+      top: 100%; left: 0;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
@@ -300,11 +272,8 @@
     .queue-dropdown li:hover {
       background: var(--ruby-hover);
     }
-
-    /* Batch size spinner */
     .batch-size {
-      display: flex;
-      align-items: center;
+      display: flex; align-items: center;
       margin-right: 8px;
     }
     .batch-size input[type="number"] {
@@ -319,22 +288,16 @@
     }
     .batch-size input[type="number"]::-webkit-inner-spin-button,
     .batch-size input[type="number"]::-webkit-outer-spin-button {
-      margin: 0;
-      -webkit-appearance: none;
+      margin: 0; -webkit-appearance: none;
     }
-
-    /* Stop and Stop All buttons */
     .stop-btn,
     .stop-all-btn {
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 4px;
       color: var(--ruby-text);
-      width: 28px;
-      height: 28px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      width: 28px; height: 28px;
+      display: flex; align-items: center; justify-content: center;
       margin-right: 4px;
       cursor: pointer;
       font-weight: bold;
@@ -347,7 +310,7 @@
       background: var(--ruby-hover);
     }
 
-    /* ===================== TIMELINE CONTEXT MENU (Ruby Style) ===================== */
+    /* TIMELINE CONTEXT MENU (Ruby Style) */
     .timeline-menu {
       position: absolute;
       display: none;
@@ -366,9 +329,8 @@
     .timeline-menu li {
       padding: 6px 12px;
       cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: space-between; /* to position sub-menu arrow on right */
+      display: flex; align-items: center;
+      justify-content: space-between;
     }
     .timeline-menu li:hover {
       background: var(--ruby-hover);
@@ -383,19 +345,16 @@
       cursor: default;
     }
     .timeline-menu li.disabled:hover {
-      background: none; /* no highlight */
+      background: none;
     }
-    .timeline-menu .submenu-arrow {
+    .submenu-arrow {
       margin-left: 8px;
       color: var(--ruby-muted);
     }
-    /* Submenu placeholder styling */
     .submenu-list {
       position: absolute;
-      top: 0;
-      left: 100%;
+      top: 0; left: 100%;
       margin-left: -1px;
-      padding-left: 0;
       display: none;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
@@ -403,6 +362,7 @@
       box-shadow: 0 2px 8px rgba(0,0,0,0.7);
       list-style: none;
       min-width: 150px;
+      padding: 4px 0;
     }
     .submenu-list li {
       padding: 6px 12px;
@@ -412,40 +372,35 @@
     .submenu-list li:hover {
       background: var(--ruby-hover);
     }
-    .timeline-menu li.submenu:hover .submenu-list {
+    .submenu:hover .submenu-list {
       display: block;
     }
 
-    /* ========== Add Node Window (Ruby style) ========== */
+    /* ADD NODE WINDOW (not changed from prior) */
     .add-node-panel {
       position: absolute;
-      display: none; /* hidden by default */
+      display: none;
       top: 0; left: 0;
       width: 240px;
       background: var(--ruby-bg);
       border: 1px solid var(--ruby-border);
       border-radius: 6px;
       box-shadow: 0 2px 6px rgba(0,0,0,0.7);
-      z-index: 10000; /* on top of everything else */
+      z-index: 10000;
       font-size: 0.9rem;
       color: var(--ruby-text);
     }
     .add-node-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
+      display: flex; align-items: center; justify-content: space-between;
       background: var(--ruby-hover);
       padding: 6px 8px;
       border-radius: 6px 6px 0 0;
-      cursor: grab; /* can drag the window by the header */
+      cursor: grab;
     }
     .add-node-title {
       font-weight: bold;
     }
-    .add-node-buttons {
-      display: flex;
-      gap: 8px;
-    }
+    .add-node-buttons { display: flex; gap: 8px; }
     .add-node-btn {
       background: transparent;
       border: none;
@@ -459,31 +414,72 @@
     }
     .add-node-content {
       padding: 8px;
-      display: block; /* toggled by expand/collapse */
+      display: block;
     }
     .node-type-item {
-      padding: 4px 0;
-      cursor: pointer;
+      padding: 4px 0; cursor: pointer;
     }
     .node-type-item:hover {
       background: var(--ruby-hover);
     }
+
+    /* =============== PRIMITIVE NODE STYLING =============== */
+    .primitive-node {
+      position: absolute;
+      top: 0; left: 0;
+      width: 140px; /* arbitrary */
+      background: #00000030; /* a dark translucent or ruby color, up to you */
+      border: 1px solid var(--ruby-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      font-size: 0.9rem;
+      color: var(--ruby-text);
+      /* pointer-events: auto so we can drag it, but we must set pointer-events: none on node-layer */
+      pointer-events: auto;
+      user-select: none;
+    }
+    .primitive-header {
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--ruby-border);
+      font-weight: bold;
+      background: var(--ruby-bg);
+      border-radius: 6px 6px 0 0;
+      cursor: grab; /* drag the node by this area or anywhere not the output circle */
+    }
+    .primitive-body {
+      padding: 6px;
+      /* Some placeholder text or instructions */
+    }
+    .primitive-output {
+      position: absolute;
+      top: 50%;
+      right: 0;
+      transform: translate(50%, -50%);
+      width: 12px; height: 12px;
+      background: #88ff88; /* output circle color, change if you like */
+      border-radius: 50%;
+      cursor: crosshair; /* indicates starting a wire */
+      box-shadow: 0 0 2px rgba(0,0,0,0.6);
+      border: 1px solid #66cc66;
+    }
   </style>
 </head>
 <body>
-  <!-- Sample Manager (left 20%) -->
+  <!-- SAMPLE MANAGER -->
   <div class="sample-container">
     <div class="sample-manager" id="sampleManager"></div>
     <div class="sample-tab" id="sampleTab"></div>
   </div>
 
-  <!-- Timeline (top-right) -->
+  <!-- TIMELINE (top-right) -->
   <div class="timeline" id="timeline">
-    <!-- Transport Node (ruby style) -->
+    <!-- We'll add a node-layer for our primitive nodes, plus an SVG for ephemeral wires -->
+    <svg id="connectionCanvas"></svg>
+    <div class="node-layer" id="nodeLayer"></div>
+
+    <!-- Transport Node -->
     <div class="transport-node" id="transportNode">
-      <!-- Drag handle -->
       <div class="transport-handle" id="transportHandle">&#8942;</div>
-      <!-- Queue button -->
       <div class="queue-button" id="queueButton">
         <span class="queue-icon" id="queueIcon">></span>
         <span class="queue-label" id="queueLabel">Queue</span>
@@ -494,11 +490,9 @@
           <li data-icon="|>" data-label="Queue (On Change)">Queue (On Change)</li>
         </ul>
       </div>
-      <!-- Batch size spinner -->
       <div class="batch-size">
         <input type="number" value="1" min="1" id="batchInput" />
       </div>
-      <!-- Stop (X) and Stop All (square) -->
       <button class="stop-btn" id="stopBtn">X</button>
       <button class="stop-all-btn" id="stopAllBtn">■</button>
     </div>
@@ -510,9 +504,15 @@
     <div class="fx-tab" id="fxTab"></div>
   </div>
 
-  <!-- Timeline context menu -->
+  <!-- TIMELINE CONTEXT MENU -->
   <ul class="timeline-menu" id="timelineMenu">
-    <li id="menuAddNode">Add Node</li>
+    <li class="submenu" id="menuAddNode">
+      Add Node
+      <span class="submenu-arrow">></span>
+      <ul class="submenu-list" id="addNodeSubmenu">
+        <li data-nodetype="primitive">Primitive</li>
+      </ul>
+    </li>
     <li id="menuAddGroup">Add Group</li>
     <hr />
     <li class="disabled" id="menuConvertGroup">Convert to Group Node</li>
@@ -523,7 +523,6 @@
     <li class="submenu" id="menuNodeTemplates">
       Node Templates
       <span class="submenu-arrow">></span>
-      <!-- Submenu placeholder -->
       <ul class="submenu-list">
         <li>Template 1</li>
         <li>Template 2</li>
@@ -531,14 +530,12 @@
     </li>
   </ul>
 
-  <!-- "Add Node" Expandable Window -->
+  <!-- "Add Node" Expandable Window (unchanged from previous example) -->
   <div class="add-node-panel" id="addNodePanel">
     <div class="add-node-header" id="addNodeHeader">
       <span class="add-node-title">Add Node</span>
       <div class="add-node-buttons">
-        <!-- Expand/collapse arrow -->
         <button class="add-node-btn" id="addNodeToggle">▼</button>
-        <!-- Close button -->
         <button class="add-node-btn" id="addNodeClose">✕</button>
       </div>
     </div>
@@ -551,30 +548,29 @@
 
   <script>
     /* 
-      1) Toggling sample manager & FX chain
-      2) Updating body grid dimensions
-      3) Animating timeline bevel
-      4) Infinite grid dragging on timeline
-      5) Zoom in/out for the grid
-      6) Transport node (drag handle, queue dropdown, etc.)
-      7) Right-click context menu on timeline
-      8) "Add Node" window
+      - Toggling sample manager & FX chain
+      - Animating timeline bevel
+      - Timeline dragging/zoom
+      - Transport node
+      - Right-click menu
+      - "Add Node" panel
+      - Now: "Primitive" nodes, each with a draggable body & an output circle for ephemeral wires
     */
     const sampleManager = document.getElementById('sampleManager');
     const sampleTab = document.getElementById('sampleTab');
     const fxChain = document.getElementById('fxChain');
     const fxTab = document.getElementById('fxTab');
     const timeline = document.getElementById('timeline');
+    const nodeLayer = document.getElementById('nodeLayer');
+    const connectionCanvas = document.getElementById('connectionCanvas');
     const bodyGrid = document.body.style;
 
-    // Animate timeline bevel
+    /* 1) Toggling sample manager & FX chain, plus bevel animation */
     let timelineBevelProgress = 0;
     let timelineTargetProgress = 0;
     let bevelStartTime = null;
     const bevelDuration = 500;
-    function lerp(a, b, t) {
-      return a + (b - a) * t;
-    }
+    function lerp(a, b, t) { return a + (b - a) * t; }
     function updateTimelineBevel(progress) {
       const inset = lerp(4, 8, progress);
       const blur = lerp(8, 16, progress);
@@ -592,9 +588,8 @@
       const t = Math.min(elapsed / bevelDuration, 1);
       timelineBevelProgress = timelineBevelProgress + (timelineTargetProgress - timelineBevelProgress) * t;
       updateTimelineBevel(timelineBevelProgress);
-      if (t < 1) {
-        requestAnimationFrame(animateBevel);
-      } else {
+      if (t < 1) requestAnimationFrame(animateBevel);
+      else {
         timelineBevelProgress = timelineTargetProgress;
         bevelStartTime = null;
       }
@@ -634,14 +629,16 @@
     fxTab.addEventListener('click', toggleFX);
     updateTimelineBevel(timelineBevelProgress);
 
-    // 4) Infinite grid dragging on timeline
+    /* 2) Timeline drag & zoom */
     let isTimelineDragging = false;
     let dragStart = { x: 0, y: 0 };
     let gridOffset = { x: 0, y: 0 };
     timeline.addEventListener('mousedown', (e) => {
-      // If we clicked inside the transport node or one of its children, do NOT drag the grid
+      // If clicking on a node or transport, skip
       const transportNode = document.getElementById('transportNode');
       if (transportNode.contains(e.target)) return;
+      // If a primitive node or child was clicked, skip
+      if (e.target.closest('.primitive-node')) return;
       if (e.button !== 0) return;
       isTimelineDragging = true;
       dragStart = { x: e.clientX, y: e.clientY };
@@ -662,8 +659,6 @@
         timeline.style.cursor = 'grab';
       }
     });
-
-    // 5) Zoom functionality
     let zoom = 1;
     function updateZoom() {
       const outerSize = 100 * zoom;
@@ -674,20 +669,20 @@
     }
     updateZoom();
     timeline.addEventListener('wheel', (e) => {
+      // If over transport or node, skip zoom
       const transportNode = document.getElementById('transportNode');
       if (transportNode.contains(e.target)) return;
+      if (e.target.closest('.primitive-node')) return;
       e.preventDefault();
       zoom *= (e.deltaY < 0) ? 1.1 : 0.9;
       zoom = Math.max(0.1, Math.min(zoom, 10));
       updateZoom();
     });
 
-    /* ================= TRANSPORT NODE LOGIC ================= */
+    /* 3) Transport node logic (unchanged) */
     const transportNode = document.getElementById('transportNode');
     const transportHandle = document.getElementById('transportHandle');
-    let isNodeDragging = false;
-    let nodeOffsetX = 0;
-    let nodeOffsetY = 0;
+    let isNodeDragging = false, nodeOffsetX=0, nodeOffsetY=0;
     transportHandle.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       isNodeDragging = true;
@@ -710,7 +705,6 @@
         transportHandle.style.cursor = 'grab';
       }
     });
-
     // Queue button & dropdown
     const queueButton = document.getElementById('queueButton');
     const queueCaret = document.getElementById('queueCaret');
@@ -726,84 +720,71 @@
     });
     queueDropdown.addEventListener('click', (e) => {
       if (e.target.tagName.toLowerCase() === 'li') {
-        const newIcon = e.target.getAttribute('data-icon');
-        const newLabel = e.target.getAttribute('data-label');
-        queueIcon.textContent = newIcon;
-        queueLabel.textContent = newLabel;
+        queueIcon.textContent = e.target.getAttribute('data-icon');
+        queueLabel.textContent = e.target.getAttribute('data-label');
         queueDropdown.style.display = 'none';
       }
     });
-
     // Stop & Stop All
-    const stopBtn = document.getElementById('stopBtn');
-    const stopAllBtn = document.getElementById('stopAllBtn');
-    stopBtn.addEventListener('click', () => {
+    document.getElementById('stopBtn').addEventListener('click', () => {
       console.log('Stop clicked!');
     });
-    stopAllBtn.addEventListener('click', () => {
+    document.getElementById('stopAllBtn').addEventListener('click', () => {
       console.log('Stop All clicked!');
     });
-
     // Batch size
-    const batchInput = document.getElementById('batchInput');
-    batchInput.addEventListener('change', () => {
-      console.log('Batch size changed to:', batchInput.value);
+    document.getElementById('batchInput').addEventListener('change', (e) => {
+      console.log('Batch size changed to:', e.target.value);
     });
 
-
-    /* =============== TIMELINE CONTEXT MENU =============== */
+    /* 4) Right-click context menu */
     const timelineMenu = document.getElementById('timelineMenu');
-
     timeline.addEventListener('contextmenu', (e) => {
-      // If right-clicking on the transport node, skip
+      // If right-clicking on the transport node or a primitive node, skip
       if (transportNode.contains(e.target)) return;
+      if (e.target.closest('.primitive-node')) return;
       e.preventDefault();
       timelineMenu.style.display = 'block';
       timelineMenu.style.left = e.clientX + 'px';
       timelineMenu.style.top = e.clientY + 'px';
     });
-
-    document.addEventListener('click', () => {
-      timelineMenu.style.display = 'none';
-    });
+    document.addEventListener('click', () => { timelineMenu.style.display = 'none'; });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape') timelineMenu.style.display = 'none';
+    });
+
+    // Add Node > Primitive
+    const addNodeSubmenu = document.getElementById('addNodeSubmenu');
+    addNodeSubmenu.addEventListener('click', (e) => {
+      if (e.target.tagName.toLowerCase() === 'li') {
+        const nodetype = e.target.getAttribute('data-nodetype');
+        if (nodetype === 'primitive') {
+          // Create a new primitive node near the context menu
+          createPrimitiveNode(parseInt(timelineMenu.style.left), parseInt(timelineMenu.style.top));
+        }
         timelineMenu.style.display = 'none';
       }
     });
 
-    // Example handlers for context menu items
-    const menuAddNode = document.getElementById('menuAddNode');
-    menuAddNode.addEventListener('click', (e) => {
-      console.log('Add Node clicked');
-      timelineMenu.style.display = 'none';
-      openAddNodePanel(e.clientX, e.clientY);
-    });
+    // "Add Group", "Convert to Group Node", etc. remain placeholders
     document.getElementById('menuAddGroup').addEventListener('click', () => {
       console.log('Add Group clicked');
       timelineMenu.style.display = 'none';
     });
-    // ... etc.
 
-    /* =============== ADD NODE WINDOW =============== */
+    /* 5) "Add Node" window logic (unchanged) */
     const addNodePanel = document.getElementById('addNodePanel');
     const addNodeHeader = document.getElementById('addNodeHeader');
     const addNodeContent = document.getElementById('addNodeContent');
     const addNodeToggle = document.getElementById('addNodeToggle');
     const addNodeClose = document.getElementById('addNodeClose');
-
-    let isAddNodeDragging = false;
-    let addNodeOffsetX = 0;
-    let addNodeOffsetY = 0;
-    let isAddNodeExpanded = true; // tracks expand/collapse
-
+    let isAddNodeDragging = false, addNodeOffsetX=0, addNodeOffsetY=0;
+    let isAddNodeExpanded = true;
     function openAddNodePanel(x, y) {
       addNodePanel.style.display = 'block';
       addNodePanel.style.left = x + 'px';
       addNodePanel.style.top = y + 'px';
     }
-
-    // Drag the panel by its header
     addNodeHeader.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       isAddNodeDragging = true;
@@ -823,17 +804,113 @@
         addNodeHeader.style.cursor = 'grab';
       }
     });
-
-    // Expand/Collapse
     addNodeToggle.addEventListener('click', () => {
       isAddNodeExpanded = !isAddNodeExpanded;
       addNodeContent.style.display = isAddNodeExpanded ? 'block' : 'none';
       addNodeToggle.textContent = isAddNodeExpanded ? '▼' : '►';
     });
-
-    // Close
     addNodeClose.addEventListener('click', () => {
       addNodePanel.style.display = 'none';
+    });
+
+    /* ==================== PRIMITIVE NODES ==================== */
+    // We'll store ephemeral wire info
+    let isDraggingWire = false;
+    let wireLine = null; // <line> element in the SVG
+    let wireStart = { x: 0, y: 0 };
+
+    function createPrimitiveNode(x, y) {
+      // Create the DOM element
+      const node = document.createElement('div');
+      node.className = 'primitive-node';
+      node.style.left = x + 'px';
+      node.style.top  = y + 'px';
+
+      // A header to show the name "Primitive" (drag by any part of node except the output circle)
+      const header = document.createElement('div');
+      header.className = 'primitive-header';
+      header.textContent = 'Primitive';
+      node.appendChild(header);
+
+      // A body area
+      const body = document.createElement('div');
+      body.className = 'primitive-body';
+      body.textContent = 'connect to widget input'; // placeholder text
+      node.appendChild(body);
+
+      // The output circle
+      const output = document.createElement('div');
+      output.className = 'primitive-output';
+      node.appendChild(output);
+
+      // Add to nodeLayer
+      nodeLayer.appendChild(node);
+
+      // DRAGGING THE NODE
+      let isNodeDrag = false;
+      let offsetX=0, offsetY=0;
+      node.addEventListener('mousedown', (e) => {
+        // If we clicked the output circle, we skip node-drag
+        if (e.target === output) return;
+        if (e.button !== 0) return;
+        isNodeDrag = true;
+        const rect = node.getBoundingClientRect();
+        offsetX = e.clientX - rect.left;
+        offsetY = e.clientY - rect.top;
+        // Bring this node to front (optional):
+        node.style.zIndex = '1000';
+      });
+      document.addEventListener('mousemove', (e2) => {
+        if (!isNodeDrag) return;
+        const timelineRect = timeline.getBoundingClientRect();
+        let newLeft = e2.clientX - offsetX - timelineRect.left;
+        let newTop  = e2.clientY - offsetY - timelineRect.top;
+        node.style.left = newLeft + 'px';
+        node.style.top  = newTop + 'px';
+      });
+      document.addEventListener('mouseup', () => {
+        isNodeDrag = false;
+        node.style.zIndex = 'auto';
+      });
+
+      // WIRE DRAGGING FROM OUTPUT
+      output.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        e.stopPropagation(); // prevent node drag
+        isDraggingWire = true;
+        // Create an SVG <line>
+        wireLine = document.createElementNS('http://www.w3.org/2000/svg','line');
+        wireLine.setAttribute('stroke','#88ff88');
+        wireLine.setAttribute('stroke-width','3');
+        wireLine.setAttribute('stroke-linecap','round');
+        // Find the center of output circle
+        const outRect = output.getBoundingClientRect();
+        const cx = outRect.left + outRect.width/2;
+        const cy = outRect.top + outRect.height/2;
+        wireStart = { x: cx, y: cy };
+        wireLine.setAttribute('x1', cx);
+        wireLine.setAttribute('y1', cy);
+        wireLine.setAttribute('x2', cx);
+        wireLine.setAttribute('y2', cy);
+        connectionCanvas.appendChild(wireLine);
+      });
+    }
+
+    // MOUSEMOVE for wire if isDraggingWire
+    document.addEventListener('mousemove', (e) => {
+      if (!isDraggingWire || !wireLine) return;
+      wireLine.setAttribute('x2', e.clientX);
+      wireLine.setAttribute('y2', e.clientY);
+    });
+    // On mouseup, we end the wire (for now, we remove it)
+    document.addEventListener('mouseup', (e) => {
+      if (isDraggingWire) {
+        isDraggingWire = false;
+        if (wireLine) {
+          connectionCanvas.removeChild(wireLine);
+          wireLine = null;
+        }
+      }
     });
   </script>
 </body>
