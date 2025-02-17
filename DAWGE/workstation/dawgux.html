@@ -3,14 +3,14 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Oxblood DAW – Full Hide + Timeline Expansion</title>
+  <title>Oxblood DAW – Full Hide + Timeline Expansion + Transport</title>
   <style>
     :root {
       /* Oxblood background */
       --bg-center: #400000;
       --bg-edge: #100000;
 
-      /* Distinct panel colors so you can see them clearly */
+      /* Distinct panel colors */
       --sample-color: #803030;   /* sample manager */
       --timeline-color: #602020; /* timeline */
       --fxchain-color: #701010;  /* fx chain */
@@ -18,18 +18,26 @@
       /* For the timeline's bevel animation */
       --bevel-dark-rgb: 0, 0, 0;
       --bevel-light-rgb: 255, 255, 255;
+      
+      /* Darker version of timeline color for the outer grid lines */
+      --timeline-dark: 67, 22, 22;
+      
+      /* Inner grid color: a shade between timeline-dark and the timeline base.
+         (Outer grid lines use opacity 0.7; here we use 0.5 so the inner lines are lighter.) */
+      --inner-grid-opacity: 0.5;
     }
     * {
-      margin: 0; padding: 0; box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
     }
 
-    /* The main layout is controlled dynamically by JS
-       We'll set an initial 2-col (20%-80%) x 2-row (70%-30%) in the HTML,
-       then override it in JS to update columns/rows. */
+    /* Main layout controlled dynamically by JS */
     body {
       background: radial-gradient(circle at center, var(--bg-center), var(--bg-edge));
       display: grid;
-      width: 100vw; height: 100vh;
+      width: 100vw; 
+      height: 100vh;
       grid-template-columns: 20% 80%;
       grid-template-rows: 70% 30%;
       grid-template-areas:
@@ -37,46 +45,62 @@
         "sample fxchain";
       overflow: hidden;
       font-family: sans-serif;
+      user-select: none; /* prevents accidental text selection during dragging */
     }
 
-    /* Sample manager container in the left column */
+    /* Sample Manager (left column) */
     .sample-container {
       grid-area: sample;
       position: relative;
       overflow: visible;
-      background: #222; /* behind the panel */
+      background: #222;
     }
     .sample-manager {
       position: absolute;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       background: var(--sample-color);
       border-radius: 8px;
       box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 1.2rem;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .sample-manager::before {
       content: "SAMPLE MANAGER";
     }
-    /* Slide off left but leave 20px */
     .sample-manager.hidden {
       transform: translateX(calc(-100% + 20px));
       opacity: 0.4;
     }
-    /* Tab for sample manager, always visible at top-left of container */
+    .sample-manager.hidden::before {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translate(calc(-100% + 180px), -50%) rotate(90deg);
+      transform-origin: left center;
+      white-space: nowrap;
+    }
     .sample-tab {
       position: absolute;
-      top: 0; left: 0;
-      width: 20px; height: 40px;
+      top: 0;
+      left: 0;
+      width: 20px;
+      height: 40px;
       background: #444;
       border-radius: 0 0 8px 0;
       box-shadow: 0 2px 6px rgba(0,0,0,0.8);
       cursor: pointer;
       color: white;
       font-size: 0.8rem;
-      display: flex; align-items: center; justify-content: center;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       z-index: 10;
     }
     .sample-tab::before {
@@ -89,59 +113,81 @@
     /* Timeline (top-right) */
     .timeline {
       grid-area: timeline;
+      position: relative; /* For absolute positioning of child elements */
       background: var(--timeline-color);
       border-radius: 8px;
-      margin-left: 10px; margin-bottom: 10px;
+      margin-left: 10px;
+      margin-bottom: 10px;
       box-shadow:
         inset 4px 4px 8px rgba(var(--bevel-dark-rgb),1),
         inset -4px -4px 8px rgba(var(--bevel-light-rgb),0.5),
         0 4px 6px rgba(0,0,0,0.7);
       transition: margin 0.5s ease, box-shadow 0.5s ease;
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 1.2rem;
+      cursor: grab;
+      /* Grid lines for timeline */
+      background-image: 
+        linear-gradient(90deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(var(--timeline-dark), 0.7) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px),
+        linear-gradient(0deg, rgba(var(--timeline-dark), var(--inner-grid-opacity)) 0.5px, transparent 0.5px);
+      background-position: 0 0;
+      /* background-size controlled via JS (zoom) */
     }
     .timeline::before {
       content: "TIMELINE";
     }
 
-    /* FX chain container (bottom-right) */
+    /* FX Chain (bottom-right) */
     .fxchain-container {
       grid-area: fxchain;
       position: relative;
       overflow: visible;
-      background: #222; /* behind the panel */
+      background: #222;
     }
     .fx-chain {
       position: absolute;
-      top: 0; left: 0;
-      width: 100%; height: 100%;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
       background: var(--fxchain-color);
       border-radius: 8px;
       box-shadow: 0 0 8px rgba(0,0,0,0.8) inset;
-      display: flex; align-items: center; justify-content: center;
-      color: white; font-size: 1.2rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 1.2rem;
       transition: transform 0.5s ease, opacity 0.5s ease;
     }
     .fx-chain::before {
       content: "FX CHAIN";
     }
-    /* Fully hide off bottom (no 20px leftover) */
     .fx-chain.hidden {
       transform: translateY(100%);
       opacity: 0.4;
     }
-    /* Tab for fx chain */
     .fx-tab {
       position: absolute;
-      top: 0; left: 50%;
+      top: 0;
+      left: 50%;
       transform: translate(-50%, -40px);
-      width: 80px; height: 20px;
+      width: 80px;
+      height: 20px;
       background: #444;
       border-radius: 8px 8px 0 0;
       box-shadow: 0 2px 6px rgba(0,0,0,0.8);
       cursor: pointer;
-      color: white; font-size: 0.8rem;
-      display: flex; align-items: center; justify-content: center;
+      color: white;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
       z-index: 10;
     }
     .fx-tab::before {
@@ -150,19 +196,178 @@
     .fx-chain.hidden + .fx-tab::before {
       content: "↑";
     }
+
+    /* =============== Transport Node Styles =============== */
+    .transport-node {
+      position: absolute;
+      /* Instead of centering horizontally, we left-align it (with a small margin)
+         so the left vertical dots remain at the left edge of the node. */
+      top: 40px;
+      left: 10px;
+      /* No horizontal translate */
+      display: flex;
+      align-items: center;
+      background: #2B2B2B;
+      border: 1px solid #444;
+      border-radius: 6px;
+      padding: 4px 6px;
+      color: #ccc;
+      font-size: 0.9rem;
+      min-height: 30px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+      z-index: 999;
+    }
+
+    /* Drag handle for the transport node */
+    .transport-handle {
+      cursor: grab;
+      margin-right: 8px;
+      color: #888;
+      display: flex;
+      align-items: center;
+      padding: 0 4px;
+    }
+    .transport-handle:hover {
+      color: #bbb;
+    }
+
+    /* Queue button (icon, label, caret) */
+    .queue-button {
+      position: relative;
+      display: flex;
+      align-items: center;
+      background: #3B3B3B;
+      border: 1px solid #555;
+      border-radius: 4px;
+      padding: 0 8px;
+      margin-right: 8px;
+      cursor: pointer;
+    }
+    .queue-button:hover {
+      background: #4A4A4A;
+    }
+    .queue-icon {
+      margin-right: 4px;
+      color: #fff;
+      font-weight: bold;
+    }
+    .queue-label {
+      color: #ddd;
+      margin-right: 4px;
+    }
+    .caret {
+      color: #ccc;
+      font-size: 0.7rem;
+    }
+
+    /* Dropdown menu */
+    .queue-dropdown {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      background: #3B3B3B;
+      border: 1px solid #555;
+      border-radius: 4px;
+      list-style: none;
+      padding: 4px 0;
+      margin: 4px 0 0 0;
+      min-width: 120px;
+      display: none;
+      z-index: 999;
+    }
+    .queue-dropdown li {
+      padding: 4px 8px;
+      cursor: pointer;
+      color: #ddd;
+    }
+    .queue-dropdown li:hover {
+      background: #4A4A4A;
+    }
+
+    /* Batch size spinner */
+    .batch-size {
+      display: flex;
+      align-items: center;
+      margin-right: 8px;
+    }
+    .batch-size input[type="number"] {
+      width: 50px;
+      background: #3B3B3B;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #ddd;
+      text-align: center;
+      outline: none;
+      -moz-appearance: textfield;
+    }
+    .batch-size input[type="number"]::-webkit-inner-spin-button,
+    .batch-size input[type="number"]::-webkit-outer-spin-button {
+      margin: 0;
+      -webkit-appearance: none;
+    }
+
+    /* Stop and Stop All buttons */
+    .stop-btn,
+    .stop-all-btn {
+      background: #3B3B3B;
+      border: 1px solid #555;
+      border-radius: 4px;
+      color: #ddd;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 4px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .stop-all-btn {
+      margin-right: 0;
+    }
+    .stop-btn:hover,
+    .stop-all-btn:hover {
+      background: #4A4A4A;
+    }
   </style>
 </head>
 <body>
-  <!-- Sample Manager Container (left 20%) -->
+  <!-- Sample Manager (left column) -->
   <div class="sample-container">
     <div class="sample-manager" id="sampleManager"></div>
     <div class="sample-tab" id="sampleTab"></div>
   </div>
 
   <!-- Timeline (top-right) -->
-  <div class="timeline" id="timeline"></div>
+  <div class="timeline" id="timeline">
+    <!-- Transport Node (floating inside timeline) -->
+    <div class="transport-node" id="transportNode">
+      <!-- Drag handle with vertical dots -->
+      <div class="transport-handle" id="transportHandle">
+        &#8942;
+      </div>
+      <!-- Queue button with dropdown -->
+      <div class="queue-button" id="queueButton">
+        <span class="queue-icon" id="queueIcon">></span>
+        <span class="queue-label" id="queueLabel">Queue</span>
+        <span class="caret" id="queueCaret">▾</span>
+        <ul class="queue-dropdown" id="queueDropdown">
+          <li data-icon=">" data-label="Queue">Queue</li>
+          <li data-icon=">>" data-label="Queue (Instant)">Queue (Instant)</li>
+          <li data-icon="|>" data-label="Queue (On Change)">Queue (On Change)</li>
+        </ul>
+      </div>
+      <!-- Batch size spinner -->
+      <div class="batch-size">
+        <input type="number" value="1" min="1" id="batchInput" />
+      </div>
+      <!-- Stop and Stop All buttons -->
+      <button class="stop-btn" id="stopBtn">X</button>
+      <button class="stop-all-btn" id="stopAllBtn">■</button>
+    </div>
+  </div>
 
-  <!-- FX Chain Container (bottom-right) -->
+  <!-- FX Chain (bottom-right) -->
   <div class="fxchain-container">
     <div class="fx-chain" id="fxChain"></div>
     <div class="fx-tab" id="fxTab"></div>
@@ -170,34 +375,37 @@
 
   <script>
     /* 
-      1) Toggling sample manager & fx chain
-      2) Dynamically changing body columns/rows so timeline expands fully
-      3) Animating timeline's bevel
+      1) Toggling sample manager & FX chain
+      2) Updating body grid dimensions
+      3) Animating timeline bevel
+      4) Infinite grid dragging on timeline
+      5) Zoom in/out for the grid
+      6) Transport node (drag handle, queue dropdown, etc.)
     */
     const sampleManager = document.getElementById('sampleManager');
     const sampleTab = document.getElementById('sampleTab');
     const fxChain = document.getElementById('fxChain');
     const fxTab = document.getElementById('fxTab');
     const timeline = document.getElementById('timeline');
-    const bodyGrid = document.body.style; // We'll manipulate gridTemplateColumns/Rows
+    const bodyGrid = document.body.style;
 
-    // Animate timeline box-shadow from normal to expanded
-    let timelineBevelProgress = 0; // 0 = normal, 1 = expanded
+    // Animate timeline bevel
+    let timelineBevelProgress = 0;
     let timelineTargetProgress = 0;
     let bevelStartTime = null;
     const bevelDuration = 500;
-
     function lerp(a, b, t) {
       return a + (b - a) * t;
     }
     function updateTimelineBevel(progress) {
-      // Normal: inset 4px 4px 8px, expanded: 8px 8px 16px
       const inset = lerp(4, 8, progress);
       const blur = lerp(8, 16, progress);
       const outerY = lerp(4, 6, progress);
       const outerBlur = lerp(6, 10, progress);
       const outerAlpha = lerp(0.7, 0.9, progress);
-      const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1), inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5), 0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
+      const boxShadow = `inset ${inset}px ${inset}px ${blur}px rgba(0,0,0,1),
+                         inset -${inset}px -${inset}px ${blur}px rgba(255,255,255,0.5),
+                         0 ${outerY}px ${outerBlur}px rgba(0,0,0,${outerAlpha})`;
       timeline.style.boxShadow = boxShadow;
     }
     function animateBevel(ts) {
@@ -206,8 +414,9 @@
       const t = Math.min(elapsed / bevelDuration, 1);
       timelineBevelProgress = timelineBevelProgress + (timelineTargetProgress - timelineBevelProgress) * t;
       updateTimelineBevel(timelineBevelProgress);
-      if (t < 1) requestAnimationFrame(animateBevel);
-      else {
+      if (t < 1) {
+        requestAnimationFrame(animateBevel);
+      } else {
         timelineBevelProgress = timelineTargetProgress;
         bevelStartTime = null;
       }
@@ -217,25 +426,17 @@
       bevelStartTime = null;
       requestAnimationFrame(animateBevel);
     }
-
-    // Update body grid columns/rows to let timeline fill the space
     function updateBodyGrid() {
       const sampleHidden = sampleManager.classList.contains('hidden');
       const fxHidden = fxChain.classList.contains('hidden');
-
-      // If sample is hidden => columns = 0% 100%, else 20% 80%
       const newCols = sampleHidden ? '0% 100%' : '20% 80%';
-      // If fx is hidden => rows = 100% 0%, else 70% 30%
       const newRows = fxHidden ? '100% 0%' : '70% 30%';
-
       bodyGrid.gridTemplateColumns = newCols;
       bodyGrid.gridTemplateRows = newRows;
     }
-
     function toggleSample() {
       sampleManager.classList.toggle('hidden');
       updateBodyGrid();
-      // If either panel is hidden => expand timeline bevel
       if (sampleManager.classList.contains('hidden') || fxChain.classList.contains('hidden')) {
         setTimelineBevel(1);
       } else {
@@ -251,12 +452,125 @@
         setTimelineBevel(0);
       }
     }
-
     sampleTab.addEventListener('click', toggleSample);
     fxTab.addEventListener('click', toggleFX);
-
-    // Initialize
     updateTimelineBevel(timelineBevelProgress);
+
+    // 4) Infinite grid dragging on timeline
+    let isTimelineDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let gridOffset = { x: 0, y: 0 };
+    timeline.addEventListener('mousedown', (e) => {
+      const transportNode = document.getElementById('transportNode');
+      if (transportNode.contains(e.target)) return;
+      if (e.button !== 0) return;
+      isTimelineDragging = true;
+      dragStart = { x: e.clientX, y: e.clientY };
+      timeline.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isTimelineDragging) return;
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      gridOffset.x += dx;
+      gridOffset.y += dy;
+      timeline.style.backgroundPosition = `${gridOffset.x}px ${gridOffset.y}px`;
+      dragStart = { x: e.clientX, y: e.clientY };
+    });
+    document.addEventListener('mouseup', () => {
+      if (isTimelineDragging) {
+        isTimelineDragging = false;
+        timeline.style.cursor = 'grab';
+      }
+    });
+
+    // 5) Zoom functionality
+    let zoom = 1;
+    function updateZoom() {
+      const outerSize = 100 * zoom;
+      const innerSize = 10 * zoom;
+      timeline.style.backgroundSize =
+        `${outerSize}px ${outerSize}px, ${outerSize}px ${outerSize}px, ` +
+        `${innerSize}px ${innerSize}px, ${innerSize}px ${innerSize}px`;
+    }
+    updateZoom();
+    timeline.addEventListener('wheel', (e) => {
+      const transportNode = document.getElementById('transportNode');
+      if (transportNode.contains(e.target)) return;
+      e.preventDefault();
+      zoom *= (e.deltaY < 0) ? 1.1 : 0.9;
+      zoom = Math.max(0.1, Math.min(zoom, 10));
+      updateZoom();
+    });
+
+    /* ================= TRANSPORT NODE LOGIC ================= */
+    // A) Draggable node (left-aligned)
+    const transportNode = document.getElementById('transportNode');
+    const transportHandle = document.getElementById('transportHandle');
+    let isNodeDragging = false;
+    let nodeOffsetX = 0;
+    let nodeOffsetY = 0;
+    transportHandle.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      isNodeDragging = true;
+      const rect = transportNode.getBoundingClientRect();
+      nodeOffsetX = e.clientX - rect.left;
+      nodeOffsetY = e.clientY - rect.top;
+      transportHandle.style.cursor = 'grabbing';
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!isNodeDragging) return;
+      const timelineRect = timeline.getBoundingClientRect();
+      let newLeft = e.clientX - nodeOffsetX - timelineRect.left;
+      let newTop = e.clientY - nodeOffsetY - timelineRect.top;
+      transportNode.style.left = newLeft + 'px';
+      transportNode.style.top = newTop + 'px';
+    });
+    document.addEventListener('mouseup', () => {
+      if (isNodeDragging) {
+        isNodeDragging = false;
+        transportHandle.style.cursor = 'grab';
+      }
+    });
+
+    // B) Queue button & dropdown
+    const queueButton = document.getElementById('queueButton');
+    const queueCaret = document.getElementById('queueCaret');
+    const queueDropdown = document.getElementById('queueDropdown');
+    const queueIcon = document.getElementById('queueIcon');
+    const queueLabel = document.getElementById('queueLabel');
+    queueCaret.addEventListener('click', (e) => {
+      e.stopPropagation();
+      queueDropdown.style.display = (queueDropdown.style.display === 'block') ? 'none' : 'block';
+    });
+    document.addEventListener('click', () => {
+      queueDropdown.style.display = 'none';
+    });
+    queueDropdown.addEventListener('click', (e) => {
+      if (e.target.tagName.toLowerCase() === 'li') {
+        const newIcon = e.target.getAttribute('data-icon');
+        const newLabel = e.target.getAttribute('data-label');
+        queueIcon.textContent = newIcon;
+        queueLabel.textContent = newLabel;
+        queueDropdown.style.display = 'none';
+      }
+    });
+
+    // C) Stop & Stop All buttons
+    const stopBtn = document.getElementById('stopBtn');
+    const stopAllBtn = document.getElementById('stopAllBtn');
+    stopBtn.addEventListener('click', () => {
+      console.log('Stop clicked!');
+    });
+    stopAllBtn.addEventListener('click', () => {
+      console.log('Stop All clicked!');
+    });
+
+    // D) Batch size input
+    const batchInput = document.getElementById('batchInput');
+    batchInput.addEventListener('change', () => {
+      console.log('Batch size changed to:', batchInput.value);
+    });
   </script>
 </body>
 </html>
