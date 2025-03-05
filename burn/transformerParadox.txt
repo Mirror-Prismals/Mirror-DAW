@@ -1,0 +1,14 @@
+Understood! Here’s a refined definition with a more neutral and natural tone:
+
+Transformer Paradox (n.)
+
+1. The tendency for an analogy meant to simplify a complex idea to introduce an equal or greater level of complexity, making understanding no easier.
+
+2. A challenge in explanation where breaking down a difficult concept replaces one kind of complexity with another, rather than making the idea more accessible.
+
+Examples:
+	•	Using a library catalog to explain database indexing, only to end up explaining classification systems and metadata.
+	•	Comparing neural networks to the human brain, but having to describe synapses and neurotransmitters to make the analogy work.
+	•	Explaining software development with city planning, leading to discussions about zoning, infrastructure, and regulation.
+
+This keeps it clear, direct, and useful without sounding dismissive or exaggerated.
