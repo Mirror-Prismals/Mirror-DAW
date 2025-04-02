@@ -1,0 +1,789 @@
+// VoxelFPS_Superflat.cpp
+//
+// A voxel demo that creates an "infinite" superflat world of voxel cubes
+// PLUS a 24×24 pixel–art heart drawn at the bottom–center of the screen.
+//
+// The heart shape is generated entirely in code by flood-filling each facet,
+// then drawing each pixel as a colored quad in an orthographic HUD overlay.
+//
+// Compile with (for example):
+//    g++ VoxelFPS_Superflat.cpp -lglfw -ldl -lGL -lX11 -lpthread -lXrandr -lXi
+//
+
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <iostream>
+#include <vector>
+#include <queue>   // for std::queue
+#include <cmath>
+
+// -----------------------------------------------------------
+// PART 1:  VOXEL WORLD (INFINITE SUPERFLAT) SETUP
+// -----------------------------------------------------------
+
+// -------------------- Settings --------------------
+const unsigned int WINDOW_WIDTH = 800;    // initial window size (fullscreen later)
+const unsigned int WINDOW_HEIGHT = 600;
+
+const float BLOCK_SIZE = 1.0f; // each block is 1 unit
+
+// For the grid overlay on each voxel face, we simulate a virtual 24×24 resolution.
+const float GRID_TEXTURE_SIZE = 24.0f;
+const float GRID_LINE_THICKNESS = 0.02f;
+
+// Render radius (in blocks) around the player for the "infinite" ground.
+const int RENDER_RADIUS = 50;
+
+// -------------------- Timing --------------------
+float deltaTime = 0.0f, lastFrame = 0.0f;
+
+// -------------------- Player (FPS) State --------------------
+glm::vec3 cameraPos(0.0f, 2.6f, 0.0f);
+float cameraYaw = -90.0f;
+float cameraPitch = 0.0f;
+glm::vec3 velocity(0.0f);
+bool onGround = false;
+
+// Movement modes:
+//   0 = Normal, 1 = Prone, 3 = Paragliding.
+int playerMode = 0;
+const float moveSpeed = 10.0f;
+const float jumpSpeed = 5.0f;
+const float gravity = 9.81f;
+const float sprintMultiplier = 2.0f;
+
+// -------------------- Mouse Handling --------------------
+bool firstMouse = true;
+float lastX = WINDOW_WIDTH / 2.0f;
+float lastY = WINDOW_HEIGHT / 2.0f;
+
+// -------------------- Global VAO/VBO Handles --------------------
+GLuint cubeVAO, cubeVBO, instanceVBO;
+GLuint outlineVAO;
+
+// Forward references to the heart–rendering stuff.
+GLuint heartVAO = 0, heartVBO = 0, heartEBO = 0;
+GLuint heartShaderProgram = 0;
+GLint heartProjLoc = -1; // location of the "projection" uniform
+
+// -------------------- Callback Functions --------------------
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
+}
+
+void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
+    float xpos = static_cast<float>(xposIn);
+    float ypos = static_cast<float>(yposIn);
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos; // y reversed: bottom->top
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.1f;
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    cameraYaw += xoffset;
+    cameraPitch += yoffset;
+    if (cameraPitch > 89.0f)  cameraPitch = 89.0f;
+    if (cameraPitch < -89.0f) cameraPitch = -89.0f;
+}
+
+// -------------------- Collision Box Functions --------------------
+glm::vec3 getPlayerBoxMin() {
+    // Prone
+    if (playerMode == 1)
+        return glm::vec3(-0.3f, -0.5f, -0.3f);
+    // Normal
+    return glm::vec3(-0.3f, -1.6f, -0.3f);
+}
+glm::vec3 getPlayerBoxMax() {
+    // Prone
+    if (playerMode == 1)
+        return glm::vec3(0.3f, 0.5f, 0.3f);
+    // Normal
+    return glm::vec3(0.3f, 0.4f, 0.3f);
+}
+
+// -------------------- Shader Compilation --------------------
+GLuint compileShaderProgram(const char* vertexSrc, const char* fragmentSrc) {
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexSrc, nullptr);
+    glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 512, nullptr, infoLog);
+        std::cerr << "Vertex Shader Compilation Error:\n" << infoLog << std::endl;
+    }
+
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentSrc, nullptr);
+    glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 512, nullptr, infoLog);
+        std::cerr << "Fragment Shader Compilation Error:\n" << infoLog << std::endl;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(program, 512, nullptr, infoLog);
+        std::cerr << "Shader Program Linking Error:\n" << infoLog << std::endl;
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    return program;
+}
+
+// -------------------- Raycasting for Block Selection --------------------
+glm::ivec3 raycastForBlock(bool /*place*/) {
+    glm::vec3 front;
+    front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    front.y = sin(glm::radians(cameraPitch));
+    front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    front = glm::normalize(front);
+    float t = 0.0f;
+    while (t < 10.0f) {
+        glm::vec3 p = cameraPos + t * front;
+        if (p.y >= 0.0f && p.y <= 1.0f) {
+            int bx = static_cast<int>(floor(p.x));
+            int bz = static_cast<int>(floor(p.z));
+            return glm::ivec3(bx, 0, bz);
+        }
+        t += 0.1f;
+    }
+    return glm::ivec3(-10000, -10000, -10000);
+}
+
+// -------------------- Process Input --------------------
+void processInput(GLFWwindow* window) {
+    static bool pKeyWasDown = false;
+    if (glfwGetKey(window, GLFW_KEY_P) == GLFW_PRESS) {
+        if (!pKeyWasDown) {
+            if (onGround) {
+                // Toggle ground modes: normal <-> prone
+                if (playerMode == 0) {
+                    playerMode = 1;
+                    cameraPos.y = 1.5f; // feet = 1.0
+                }
+                else if (playerMode == 1) {
+                    playerMode = 0;
+                    cameraPos.y = 2.6f; // feet = 1.0
+                }
+            }
+            else {
+                // In the air, activate paraglider if not already in that mode.
+                if (playerMode != 3) {
+                    playerMode = 3;
+                }
+            }
+            pKeyWasDown = true;
+        }
+    }
+    else {
+        pKeyWasDown = false;
+    }
+
+    // Movement
+    glm::vec3 frontHoriz = glm::normalize(glm::vec3(cos(glm::radians(cameraYaw)), 0.0f,
+        sin(glm::radians(cameraYaw))));
+    glm::vec3 right = glm::normalize(glm::cross(frontHoriz, glm::vec3(0, 1, 0)));
+    glm::vec3 moveDir(0.0f);
+
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) moveDir += frontHoriz;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) moveDir -= frontHoriz;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) moveDir -= right;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) moveDir += right;
+
+    if (glm::length(moveDir) > 0.001f)
+        moveDir = glm::normalize(moveDir);
+
+    float speed = moveSpeed;
+    // Sprint
+    if (playerMode == 0 && glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+        speed *= sprintMultiplier;
+    // Prone is slower
+    if (playerMode == 1)
+        speed *= 0.5f;
+
+    glm::vec3 horizVel = moveDir * speed;
+    velocity.x = horizVel.x;
+    velocity.z = horizVel.z;
+
+    // Jump
+    if (playerMode == 0 && onGround && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        velocity.y = jumpSpeed;
+        onGround = false;
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+}
+
+// -------------------- Handle Collision --------------------
+void handleCollision() {
+    float feet = cameraPos.y + getPlayerBoxMin().y;
+    if (feet < 1.0f) {
+        if (playerMode == 3) {
+            float targetY = 1.0f - getPlayerBoxMin().y;
+            cameraPos.y = glm::mix(cameraPos.y, targetY, 0.1f);
+            if (std::abs((cameraPos.y + getPlayerBoxMin().y) - 1.0f) < 0.05f) {
+                cameraPos.y = targetY;
+                velocity.y = 0.0f;
+                onGround = true;
+                playerMode = 0; // revert to normal after landing
+                cameraPos.y = 2.6f;
+            }
+        }
+        else {
+            cameraPos.y = 1.0f - getPlayerBoxMin().y;
+            velocity.y = 0.0f;
+            onGround = true;
+        }
+    }
+}
+
+// -------------------- Cube Geometry Data --------------------
+float cubeVertices[] = {
+    // position       normal    texCoord
+    // Front face
+   -0.5f, -0.5f,  0.5f,   0,0,1,   0.0f, 0.0f,
+    0.5f, -0.5f,  0.5f,   0,0,1,   1.0f, 0.0f,
+    0.5f,  0.5f,  0.5f,   0,0,1,   1.0f, 1.0f,
+    0.5f,  0.5f,  0.5f,   0,0,1,   1.0f, 1.0f,
+   -0.5f,  0.5f,  0.5f,   0,0,1,   0.0f, 1.0f,
+   -0.5f, -0.5f,  0.5f,   0,0,1,   0.0f, 0.0f,
+
+   // Right face
+   0.5f, -0.5f,  0.5f,   1,0,0,   0.0f, 0.0f,
+   0.5f, -0.5f, -0.5f,   1,0,0,   1.0f, 0.0f,
+   0.5f,  0.5f, -0.5f,   1,0,0,   1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,   1,0,0,   1.0f, 1.0f,
+   0.5f,  0.5f,  0.5f,   1,0,0,   0.0f, 1.0f,
+   0.5f, -0.5f,  0.5f,   1,0,0,   0.0f, 0.0f,
+
+   // Back face
+   0.5f, -0.5f, -0.5f,   0,0,-1,  0.0f, 0.0f,
+  -0.5f, -0.5f, -0.5f,   0,0,-1,  1.0f, 0.0f,
+  -0.5f,  0.5f, -0.5f,   0,0,-1,  1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f,   0,0,-1,  1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,   0,0,-1,  0.0f, 1.0f,
+   0.5f, -0.5f, -0.5f,   0,0,-1,  0.0f, 0.0f,
+
+   // Left face
+  -0.5f, -0.5f, -0.5f,  -1,0,0,   0.0f, 0.0f,
+  -0.5f, -0.5f,  0.5f,  -1,0,0,   1.0f, 0.0f,
+  -0.5f,  0.5f,  0.5f,  -1,0,0,   1.0f, 1.0f,
+  -0.5f,  0.5f,  0.5f,  -1,0,0,   1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f,  -1,0,0,   0.0f, 1.0f,
+  -0.5f, -0.5f, -0.5f,  -1,0,0,   0.0f, 0.0f,
+
+  // Top face
+ -0.5f,  0.5f,  0.5f,   0,1,0,   0.0f, 0.0f,
+  0.5f,  0.5f,  0.5f,   0,1,0,   1.0f, 0.0f,
+  0.5f,  0.5f, -0.5f,   0,1,0,   1.0f, 1.0f,
+  0.5f,  0.5f, -0.5f,   0,1,0,   1.0f, 1.0f,
+ -0.5f,  0.5f, -0.5f,   0,1,0,   0.0f, 1.0f,
+ -0.5f,  0.5f,  0.5f,   0,1,0,   0.0f, 0.0f,
+
+ // Bottom face
+-0.5f, -0.5f, -0.5f,   0,-1,0,  0.0f, 0.0f,
+ 0.5f, -0.5f, -0.5f,   0,-1,0,  1.0f, 0.0f,
+ 0.5f, -0.5f,  0.5f,   0,-1,0,  1.0f, 1.0f,
+ 0.5f, -0.5f,  0.5f,   0,-1,0,  1.0f, 1.0f,
+-0.5f, -0.5f,  0.5f,   0,-1,0,  0.0f, 1.0f,
+-0.5f, -0.5f, -0.5f,   0,-1,0,  0.0f, 0.0f
+};
+
+// Build a list of offsets for the visible chunks around the camera.
+std::vector<glm::vec3> getVisibleInstances(const glm::vec3& camPos) {
+    std::vector<glm::vec3> offsets;
+    int camX = static_cast<int>(floor(camPos.x));
+    int camZ = static_cast<int>(floor(camPos.z));
+    for (int z = camZ - RENDER_RADIUS; z <= camZ + RENDER_RADIUS; z++) {
+        for (int x = camX - RENDER_RADIUS; x <= camX + RENDER_RADIUS; x++) {
+            offsets.push_back(glm::vec3(x * BLOCK_SIZE, 0.0f, z * BLOCK_SIZE));
+        }
+    }
+    return offsets;
+}
+
+// -------------------- Voxel Shaders --------------------
+const char* voxelVertexShaderSrc = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;  // Unused
+layout (location = 2) in vec2 aTexCoord;
+layout (location = 3) in vec3 aOffset;
+
+uniform mat4 model;
+uniform mat4 view;
+uniform mat4 projection;
+
+out vec2 TexCoord;
+
+void main(){
+    vec3 pos = aPos + aOffset;
+    gl_Position = projection * view * model * vec4(pos, 1.0);
+    TexCoord = aTexCoord;
+}
+)";
+
+const char* voxelFragmentShaderSrc = R"(
+#version 330 core
+in vec2 TexCoord;
+out vec4 FragColor;
+
+const float gridSize = 24.0;
+const float lineWidth = 0.02;
+
+void main(){
+    vec2 f = fract(TexCoord * gridSize);
+    if(f.x < lineWidth || f.x > 1.0 - lineWidth ||
+       f.y < lineWidth || f.y > 1.0 - lineWidth)
+       FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    else
+       FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+}
+)";
+
+// -----------------------------------------------------------
+// PART 2:  HEART SHAPE (PIXEL-ART) HUD
+// -----------------------------------------------------------
+
+// We’ll replicate your Python data: outline pixels, fill seeds, etc.
+// 24×24 grid => x in [0..23], y in [0..23], (0,0) top-left or bottom-left?
+// We'll assume (0,0) is top-left, consistent with typical image coords.
+static std::vector<glm::ivec2> heartOutline = {
+    // Your provided outline pixels
+    {4,1},{5,1},{6,1},{7,1},{16,1},{17,1},{18,1},{19,1},{3,2},{6,2},{8,2},{9,2},
+    {10,2},{13,2},{14,2},{15,2},{17,2},{20,2},{2,3},{5,3},{10,3},{11,3},{12,3},
+    {13,3},{18,3},{21,3},{1,4},{5,4},{7,4},{8,4},{9,4},{14,4},{15,4},{16,4},
+    {18,4},{22,4},{0,5},{4,5},{5,5},{6,5},{17,5},{18,5},{19,5},{23,5},{0,6},
+    {1,6},{2,6},{3,6},{4,6},{19,6},{20,6},{21,6},{22,6},{23,6},{0,7},{2,7},{3,7},
+    {20,7},{21,7},{23,7},{0,8},{3,8},{20,8},{23,8},{0,9},{3,9},{20,9},{23,9},
+    {0,10},{2,10},{4,10},{19,10},{21,10},{23,10},{0,11},{1,11},{5,11},{18,11},
+    {22,11},{23,11},{0,12},{1,12},{6,12},{17,12},{22,12},{23,12},{1,13},{2,13},
+    {3,13},{6,13},{17,13},{20,13},{21,13},{22,13},{2,14},{4,14},{5,14},{6,14},
+    {7,14},{8,14},{9,14},{14,14},{15,14},{16,14},{17,14},{18,14},{19,14},{21,14},
+    {3,15},{7,15},{10,15},{11,15},{12,15},{13,15},{16,15},{20,15},{4,16},{8,16},
+    {15,16},{19,16},{5,17},{9,17},{14,17},{18,17},{6,18},{9,18},{14,18},{17,18},
+    {7,19},{10,19},{13,19},{16,19},{8,20},{10,20},{13,20},{15,20},{9,21},{10,21},
+    {11,21},{12,21},{13,21},{14,21},{10,22},{11,22},{12,22},{13,22},{11,23},{12,23}
+};
+
+// Flood–fill seeds, each region gets a distinct color from `facetColors`
+static std::vector<glm::ivec2> fillSeeds = {
+    {7,3},{16,3},{3,4},{20,4},{1,9},{11,9},{22,9},
+    {4,14},{19,14},{7,17},{11,17},{16,17}
+};
+
+// Some red/pinkish colors for the facets:
+static std::vector<glm::vec4> facetColors = {
+    {0.78f, 0.08f, 0.24f, 1.0f}, // (200, 20, 60)
+    {1.0f,  0.39f, 0.51f, 1.0f}, // (255, 100,130)
+    {0.59f, 0.04f, 0.12f, 1.0f}, // (150, 10, 30)
+    {0.86f, 0.20f, 0.31f, 1.0f}, // (220, 50, 80)
+    {0.71f, 0.12f, 0.20f, 1.0f}, // (180, 30, 50)
+    {0.94f, 0.31f, 0.39f, 1.0f}  // (240, 80,100)
+};
+
+// Outline color
+static glm::vec4 outlineColor = { 0.39f, 0.0f, 0.08f, 1.0f }; // (100, 0, 20)
+
+// We'll store the final color of each pixel in a 24x24 array
+static glm::vec4 heartPixels[24][24]; // [y][x]
+
+// BFS flood fill function
+bool inBounds(int x, int y) {
+    return (x >= 0 && x < 24 && y >= 0 && y < 24);
+}
+
+void floodFill(glm::ivec2 start, const std::vector<glm::ivec2>& outline,
+    const glm::vec4& color)
+{
+    // Convert outline vector into a set for quick membership test
+    static const int dirs[4][2] = { {1,0},{-1,0},{0,1},{0,-1} };
+    std::vector<bool> isOutline(24 * 24, false);
+    for (auto& p : outline) {
+        int idx = p.y * 24 + p.x;
+        isOutline[idx] = true;
+    }
+
+    // BFS queue
+    std::queue<glm::ivec2> q;
+    q.push(start);
+
+    // We'll keep track of visited
+    std::vector<bool> visited(24 * 24, false);
+
+    while (!q.empty()) {
+        glm::ivec2 cur = q.front();
+        q.pop();
+        int idx = cur.y * 24 + cur.x;
+        if (visited[idx]) continue;
+        visited[idx] = true;
+
+        // If it's an outline pixel, skip
+        if (isOutline[idx]) continue;
+
+        // Mark with color
+        heartPixels[cur.y][cur.x] = color;
+
+        // Add neighbors
+        for (auto& d : dirs) {
+            int nx = cur.x + d[0];
+            int ny = cur.y + d[1];
+            if (inBounds(nx, ny) && !visited[ny * 24 + nx]) {
+                q.push({ nx, ny });
+            }
+        }
+    }
+}
+
+// Build the final heart pixel data: fill facets, then set outline.
+void buildHeartPixels() {
+    // Clear everything to transparent
+    for (int y = 0; y < 24; y++) {
+        for (int x = 0; x < 24; x++) {
+            heartPixels[y][x] = glm::vec4(0, 0, 0, 0);
+        }
+    }
+
+    // Flood-fill each facet
+    for (size_t i = 0; i < fillSeeds.size(); i++) {
+        glm::vec4 c = facetColors[i % facetColors.size()];
+        floodFill(fillSeeds[i], heartOutline, c);
+    }
+
+    // Draw the outline
+    for (auto& p : heartOutline) {
+        if (inBounds(p.x, p.y)) {
+            heartPixels[p.y][p.x] = outlineColor;
+        }
+    }
+}
+
+// We'll build a VBO of small quads for each non-transparent pixel.
+struct HeartVertex {
+    glm::vec2 pos;    // screen position
+    glm::vec4 color;  // RGBA
+};
+
+std::vector<HeartVertex> heartVerts;
+std::vector<unsigned int> heartIndices;
+
+void buildHeartGeometry(float screenX, float screenY, float pixelSize) {
+    heartVerts.clear();
+    heartIndices.clear();
+
+    // We'll create quads for each pixel that has alpha > 0
+    //   top-left corner of pixel (X, Y)
+    //   size = pixelSize
+    // We'll define 4 vertices, 6 indices per quad
+    // Our coordinate system: (0,0) top-left of screen, Y increasing downward
+    // but in OpenGL typically Y=0 is bottom. We'll do a flip or we can just
+    // treat the top as Y=0 if we want. For simplicity, let's do top=0.
+    // That means if we want the heart's top pixel at screenY, we do:
+    //   vertex pos = (screenX + x*pixelSize, screenY + y*pixelSize)
+    // But watch out for the difference in row indexing if your origin is top-left
+    // We’ll assume row 0 is top row. So that’s consistent.
+
+    unsigned int indexOffset = 0;
+    for (int y = 0; y < 24; y++) {
+        for (int x = 0; x < 24; x++) {
+            glm::vec4 c = heartPixels[y][x];
+            if (c.a < 0.001f) {
+                continue; // skip transparent
+            }
+            // We'll create a quad
+            float px = screenX + x * pixelSize;
+            float py = screenY + y * pixelSize;
+
+            // 4 vertices
+            HeartVertex v0, v1, v2, v3;
+            v0.pos = glm::vec2(px, py);        // top-left
+            v1.pos = glm::vec2(px + pixelSize, py);    // top-right
+            v2.pos = glm::vec2(px + pixelSize, py + pixelSize); // bottom-right
+            v3.pos = glm::vec2(px, py + pixelSize);      // bottom-left
+            v0.color = c;
+            v1.color = c;
+            v2.color = c;
+            v3.color = c;
+
+            heartVerts.push_back(v0);
+            heartVerts.push_back(v1);
+            heartVerts.push_back(v2);
+            heartVerts.push_back(v3);
+
+            // 6 indices (two triangles)
+            heartIndices.push_back(indexOffset + 0);
+            heartIndices.push_back(indexOffset + 1);
+            heartIndices.push_back(indexOffset + 2);
+            heartIndices.push_back(indexOffset + 2);
+            heartIndices.push_back(indexOffset + 3);
+            heartIndices.push_back(indexOffset + 0);
+
+            indexOffset += 4;
+        }
+    }
+}
+
+// A simple shader that uses the color attribute directly:
+const char* heartVertexShaderSrc = R"(
+#version 330 core
+layout (location = 0) in vec2 aPos;
+layout (location = 1) in vec4 aColor;
+
+uniform mat4 projection;
+
+out vec4 vertColor;
+
+void main(){
+    gl_Position = projection * vec4(aPos, 0.0, 1.0);
+    vertColor = aColor;
+}
+)";
+
+const char* heartFragmentShaderSrc = R"(
+#version 330 core
+in vec4 vertColor;
+out vec4 FragColor;
+
+void main(){
+    FragColor = vertColor;
+}
+)";
+
+// -----------------------------------------------------------
+// PART 3:  MAIN
+// -----------------------------------------------------------
+int main() {
+    // --- Init GLFW/Window ---
+    if (!glfwInit()) {
+        std::cerr << "Failed to initialize GLFW\n";
+        return -1;
+    }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+
+    // Create a fullscreen window.
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Voxel FPS Superflat + Heart HUD", primaryMonitor, NULL);
+    if (!window) {
+        std::cerr << "Failed to create GLFW window\n";
+        glfwTerminate();
+        return -1;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD\n";
+        return -1;
+    }
+    glEnable(GL_DEPTH_TEST);
+
+    // --- Compile voxel shader ---
+    GLuint voxelShaderProgram = compileShaderProgram(voxelVertexShaderSrc, voxelFragmentShaderSrc);
+
+    // --- Setup voxel geometry (cube) ---
+    glGenVertexArrays(1, &cubeVAO);
+    glGenBuffers(1, &cubeVBO);
+    glBindVertexArray(cubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+
+    // position
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    // normal (unused)
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    // texCoord
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+
+    // --- Instance buffer for the infinite grid ---
+    glGenBuffers(1, &instanceVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glEnableVertexAttribArray(3);
+    glVertexAttribDivisor(3, 1);
+    glBindVertexArray(0);
+
+    // --- Outline VAO (same VBO as cube) ---
+    glGenVertexArrays(1, &outlineVAO);
+    glBindVertexArray(outlineVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+
+    // --- Build the heart pixel data ---
+    buildHeartPixels();
+
+    // We'll place the heart so that its top-left is at (hudX, hudY).
+    // For a 24×24 shape, let's put it near bottom center:
+    // e.g.  ( (WINDOW_WIDTH - 24) / 2,  20 from bottom )
+    // But we won't rely on WINDOW_WIDTH, because we go fullscreen. We'll do dynamic later.
+    // For now, let's pick some offset from the bottom:
+    float heartPixelSize = 3.0f; // each pixel is 3x3 screen pixels, tweak as needed
+    // We'll do final placement after we know the actual screen size in the loop or just do:
+    float heartX = (float)WINDOW_WIDTH * 0.5f - 12.0f * heartPixelSize;  // center on screen
+    float heartY = 20.0f; // 20 px from bottom if we treat Y=0 top
+    // But in a typical top-left coordinate system, to place 20 px above the bottom,
+    // we'd do  ( WINDOW_HEIGHT - 20 - 24*pixelSize ).
+    // Let's do that:
+    float heartTop = (float)WINDOW_HEIGHT - 20.0f - 24.0f * heartPixelSize;
+    float heartLeft = (float)WINDOW_WIDTH * 0.5f - 12.0f * heartPixelSize;
+
+    buildHeartGeometry(heartLeft, heartTop, heartPixelSize);
+
+    // --- Create VAO/VBO/EBO for the heart quads ---
+    glGenVertexArrays(1, &heartVAO);
+    glBindVertexArray(heartVAO);
+
+    glGenBuffers(1, &heartVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, heartVBO);
+    glBufferData(GL_ARRAY_BUFFER, heartVerts.size() * sizeof(HeartVertex), heartVerts.data(), GL_STATIC_DRAW);
+
+    glGenBuffers(1, &heartEBO);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, heartEBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, heartIndices.size() * sizeof(unsigned int), heartIndices.data(), GL_STATIC_DRAW);
+
+    // aPos (vec2)
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(HeartVertex), (void*)offsetof(HeartVertex, pos));
+    glEnableVertexAttribArray(0);
+
+    // aColor (vec4)
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(HeartVertex), (void*)offsetof(HeartVertex, color));
+    glEnableVertexAttribArray(1);
+
+    glBindVertexArray(0);
+
+    // --- Compile heart shader program ---
+    heartShaderProgram = compileShaderProgram(heartVertexShaderSrc, heartFragmentShaderSrc);
+    heartProjLoc = glGetUniformLocation(heartShaderProgram, "projection");
+
+    // -----------------------------------------------------------
+    // Main Loop
+    // -----------------------------------------------------------
+    while (!glfwWindowShouldClose(window)) {
+        float currentFrame = static_cast<float>(glfwGetTime());
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        processInput(window);
+
+        // Gravity
+        if (!onGround) {
+            if (playerMode == 3) // paraglider
+                velocity.y -= gravity * 0.3f * deltaTime;
+            else
+                velocity.y -= gravity * deltaTime;
+        }
+        cameraPos += velocity * deltaTime;
+        handleCollision();
+
+        glClearColor(0.53f, 0.81f, 0.92f, 1.0f); // sky
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // 3D View/Projection
+        glm::vec3 front(
+            cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch)),
+            sin(glm::radians(cameraPitch)),
+            sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch))
+        );
+        front = glm::normalize(front);
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + front, glm::vec3(0, 1, 0));
+        glm::mat4 proj3D = glm::perspective(glm::radians(103.0f),
+            (float)WINDOW_WIDTH / (float)WINDOW_HEIGHT,
+            0.1f, 100.0f);
+
+        // Update instance data
+        std::vector<glm::vec3> instanceOffsets = getVisibleInstances(cameraPos);
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        glBufferData(GL_ARRAY_BUFFER, instanceOffsets.size() * sizeof(glm::vec3), instanceOffsets.data(), GL_DYNAMIC_DRAW);
+
+        // Draw the voxel grid
+        glUseProgram(voxelShaderProgram);
+        glm::mat4 modelMat(1.0f);
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(modelMat));
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(proj3D));
+
+        glBindVertexArray(cubeVAO);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 36, instanceOffsets.size());
+        glBindVertexArray(0);
+
+        // Draw block selection outline
+        glm::ivec3 selectedBlock = raycastForBlock(false);
+        if (selectedBlock.x != -10000) {
+            glm::mat4 outlineMat = glm::translate(glm::mat4(1.0f),
+                glm::vec3(selectedBlock.x * BLOCK_SIZE, 0.0f, selectedBlock.z * BLOCK_SIZE));
+            outlineMat = glm::scale(outlineMat, glm::vec3(1.05f));
+            glUseProgram(voxelShaderProgram);
+            glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(outlineMat));
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glLineWidth(2.0f);
+            glBindVertexArray(outlineVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            glBindVertexArray(0);
+        }
+
+        // -----------------------------------------------------------
+        // Draw the Heart HUD
+        // -----------------------------------------------------------
+        // For 2D overlay, an orthographic projection: (0,0) top-left, (W,H) bottom-right
+        glm::mat4 hudProjection = glm::ortho(0.0f, (float)WINDOW_WIDTH, (float)WINDOW_HEIGHT, 0.0f, -1.0f, 1.0f);
+
+        glUseProgram(heartShaderProgram);
+        glUniformMatrix4fv(heartProjLoc, 1, GL_FALSE, glm::value_ptr(hudProjection));
+
+        glBindVertexArray(heartVAO);
+        glDrawElements(GL_TRIANGLES, (GLsizei)heartIndices.size(), GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+        // Swap
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    // Cleanup
+    glDeleteVertexArrays(1, &cubeVAO);
+    glDeleteBuffers(1, &cubeVBO);
+    glDeleteBuffers(1, &instanceVBO);
+    glDeleteVertexArrays(1, &outlineVAO);
+    glDeleteProgram(voxelShaderProgram);
+
+    glDeleteVertexArrays(1, &heartVAO);
+    glDeleteBuffers(1, &heartVBO);
+    glDeleteBuffers(1, &heartEBO);
+    glDeleteProgram(heartShaderProgram);
+
+    glfwTerminate();
+    return 0;
+}
