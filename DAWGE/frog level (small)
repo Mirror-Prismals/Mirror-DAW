@@ -1,0 +1,662 @@
+// VoxelFPS_Superflat.cpp
+//
+// A voxel demo that creates an "infinite" superflat world of voxel cubes.
+// Each cube is rendered with a white stone base and a tight black grid overlay.
+// The player spawns on a platform so that the collision box’s feet (relative to the eye)
+// exactly rest on top of the cubes (i.e. the player’s feet are at y=1).
+//
+// Simplified Controls:
+//   - WASD: Move horizontally.
+//   - Mouse: Look around.
+//   - Spacebar: Jump (when on the ground).
+//   - Left Control: Sprint.
+//   - Escape: Exit.
+//
+// • Horizontal movement is computed using only yaw (ignoring pitch).
+// • A simple ray–cast selects the block you’re looking at and draws a white wireframe outline over it.
+// • The projection FOV is set to 103°.
+//
+// Compile with (for example):
+//    g++ VoxelFPS_Superflat.cpp -lglfw -ldl -lGL -lX11 -lpthread -lXrandr -lXi
+//
+
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <iostream>
+#include <vector>
+#include <cmath>
+#include <cstdlib> // For std::abs
+
+// -------------------- Settings --------------------
+// Get screen resolution for fullscreen
+// Note: This basic approach might not be the most robust way to get resolution
+//       before window creation in all environments, but works for typical setups.
+int getScreenWidth() {
+    GLFWmonitor* primary = glfwGetPrimaryMonitor();
+    if (!primary) return 800; // Default fallback
+    const GLFWvidmode* mode = glfwGetVideoMode(primary);
+    if (!mode) return 800; // Default fallback
+    return mode->width;
+}
+
+int getScreenHeight() {
+    GLFWmonitor* primary = glfwGetPrimaryMonitor();
+    if (!primary) return 600; // Default fallback
+    const GLFWvidmode* mode = glfwGetVideoMode(primary);
+    if (!mode) return 600; // Default fallback
+    return mode->height;
+}
+
+// Use screen resolution for initial window size (will be fullscreen)
+const unsigned int WINDOW_WIDTH = getScreenWidth();
+const unsigned int WINDOW_HEIGHT = getScreenHeight();
+
+
+const float BLOCK_SIZE = 1.0f; // each block is 1 unit
+
+// For the grid overlay, we simulate a virtual 24×24 resolution per face.
+const float GRID_TEXTURE_SIZE = 24.0f;
+const float GRID_LINE_THICKNESS = 0.02f;
+
+// Render radius (in blocks) around the player for the "infinite" ground.
+const int RENDER_RADIUS = 50;
+
+// -------------------- Timing --------------------
+float deltaTime = 0.0f, lastFrame = 0.0f;
+
+// -------------------- Player (FPS) State --------------------
+// Collision box is defined relative to the camera (eye).
+// The box spans from (-0.3, -1.6, -0.3) to (0.3, 0.4, 0.3).
+// Thus, the player's feet are at cameraPos.y - 1.6.
+// We spawn so that feet = 2.6 - 1.6 = 1.0.
+glm::vec3 cameraPos(0.0f, 2.6f, 0.0f);
+float cameraYaw = -90.0f;
+float cameraPitch = 0.0f;
+glm::vec3 velocity(0.0f);
+bool onGround = false; // Start airborne, will land immediately
+
+// Movement parameters
+const float moveSpeed = 10.0f;
+const float jumpSpeed = 5.0f;
+const float gravity = 9.81f;
+const float sprintMultiplier = 2.0f;
+
+// -------------------- Mouse Handling --------------------
+bool firstMouse = true;
+float lastX = WINDOW_WIDTH / 2.0f;
+float lastY = WINDOW_HEIGHT / 2.0f;
+
+// -------------------- Global VAO/VBO Handles --------------------
+GLuint cubeVAO, cubeVBO, instanceVBO;
+GLuint outlineVAO, outlineVBO; // Separate VBO for outline to avoid conflicts
+
+// -------------------- Callback Functions --------------------
+void framebuffer_size_callback(GLFWwindow* window, int width, int height) {
+    glViewport(0, 0, width, height);
+}
+
+void mouse_callback(GLFWwindow* window, double xposIn, double yposIn) {
+    float xpos = static_cast<float>(xposIn);
+    float ypos = static_cast<float>(yposIn);
+    if (firstMouse) {
+        lastX = xpos;
+        lastY = ypos;
+        firstMouse = false;
+    }
+    float xoffset = xpos - lastX;
+    float yoffset = lastY - ypos; // y reversed: bottom->top
+    lastX = xpos;
+    lastY = ypos;
+
+    float sensitivity = 0.1f;
+    xoffset *= sensitivity;
+    yoffset *= sensitivity;
+
+    cameraYaw += xoffset;
+    cameraPitch += yoffset;
+    if (cameraPitch > 89.0f)
+        cameraPitch = 89.0f;
+    if (cameraPitch < -89.0f)
+        cameraPitch = -89.0f;
+}
+
+// -------------------- Collision Box Functions --------------------
+// Returns the collision box (min and max) relative to the camera (eye).
+// Box is always from (-0.3, -1.6, -0.3) to (0.3, 0.4, 0.3)
+glm::vec3 getPlayerBoxMin() {
+    return glm::vec3(-0.3f, -1.6f, -0.3f);
+}
+glm::vec3 getPlayerBoxMax() {
+    return glm::vec3(0.3f, 0.4f, 0.3f);
+}
+
+// -------------------- Shader Compilation --------------------
+GLuint compileShaderProgram(const char* vertexSrc, const char* fragmentSrc) {
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexSrc, NULL);
+    glCompileShader(vertexShader);
+    int success;
+    char infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cerr << "Vertex Shader Compilation Error:\n" << infoLog << std::endl;
+    }
+
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentSrc, NULL);
+    glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cerr << "Fragment Shader Compilation Error:\n" << infoLog << std::endl;
+    }
+
+    GLuint program = glCreateProgram();
+    glAttachShader(program, vertexShader);
+    glAttachShader(program, fragmentShader);
+    glLinkProgram(program);
+    glGetProgramiv(program, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetProgramInfoLog(program, 512, NULL, infoLog);
+        std::cerr << "Shader Program Linking Error:\n" << infoLog << std::endl;
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+    return program;
+}
+
+// -------------------- Raycasting for Block Selection --------------------
+// This function steps along the view ray and returns the grid coordinates of the block
+// whose top surface (y between 0 and 1) is intersected. If no block is found within 10 units,
+// it returns an invalid vector.
+glm::ivec3 raycastForBlock() { // Removed unused 'place' parameter
+    glm::vec3 front;
+    front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    front.y = sin(glm::radians(cameraPitch));
+    front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+    front = glm::normalize(front);
+
+    float step = 0.05f; // Smaller step for better precision
+    float maxDist = 10.0f;
+
+    for (float t = 0.0f; t < maxDist; t += step) {
+        glm::vec3 p = cameraPos + t * front;
+        // Check if the point is inside the bounds of the top layer of blocks
+        if (p.y >= 0.0f && p.y <= BLOCK_SIZE) {
+            // Check if the point is within the horizontal bounds of *some* block
+            // (Since it's a superflat world, we only care about y=0 blocks)
+            int bx = static_cast<int>(floor(p.x / BLOCK_SIZE));
+            int bz = static_cast<int>(floor(p.z / BLOCK_SIZE));
+            // Check intersection with the specific block at (bx, 0, bz)
+            // A more robust check would involve checking entry/exit points with the block bounds
+            // For simplicity here, if the ray passes through y=0 to y=1 at the correct x,z, we select it.
+            return glm::ivec3(bx, 0, bz);
+        }
+        // Optimization: If ray is pointing upwards and already above block height, stop early
+        if (front.y > 0 && p.y > BLOCK_SIZE) {
+            break;
+        }
+        // Optimization: If ray is pointing downwards and already below block bottom, stop early (less likely needed here)
+        // if (front.y < 0 && p.y < 0.0f) {
+        //     break;
+        // }
+    }
+    return glm::ivec3(-10000, -10000, -10000); // Indicate no block found
+}
+
+
+// -------------------- Process Input --------------------
+// Handles WASD movement, mouse look (via callback), jump, sprint, and exit.
+void processInput(GLFWwindow* window) {
+    // Compute horizontal movement using only yaw (ignoring pitch).
+    glm::vec3 frontHoriz = glm::normalize(glm::vec3(cos(glm::radians(cameraYaw)), 0.0f, sin(glm::radians(cameraYaw))));
+    glm::vec3 right = glm::normalize(glm::cross(frontHoriz, glm::vec3(0, 1, 0)));
+
+    glm::vec3 moveDir(0.0f);
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS)
+        moveDir += frontHoriz;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS)
+        moveDir -= frontHoriz;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS)
+        moveDir -= right;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS)
+        moveDir += right;
+    if (glm::length(moveDir) > 0.001f)
+        moveDir = glm::normalize(moveDir);
+
+    float speed = moveSpeed;
+    // Sprinting allowed when moving.
+    if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS)
+        speed *= sprintMultiplier;
+
+    glm::vec3 horizVel = moveDir * speed;
+    velocity.x = horizVel.x;
+    velocity.z = horizVel.z;
+
+    // Jump: allowed only if on the ground.
+    if (onGround && glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) {
+        velocity.y = jumpSpeed;
+        onGround = false; // Player is now airborne
+    }
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, true);
+}
+
+// -------------------- Handle Collision --------------------
+// Checks collision with the ground (y=1).
+// If the player's feet are at or below y=1 and moving downwards,
+// snap them to y=1, stop vertical velocity, and set onGround to true.
+// Otherwise, the player is considered airborne (onGround = false).
+void handleCollision() {
+    float feetY = cameraPos.y + getPlayerBoxMin().y;
+    float groundLevel = BLOCK_SIZE; // Top of the blocks is at y=1.0
+
+    if (velocity.y <= 0.0f && feetY <= groundLevel) {
+        // Collision with ground or trying to move below it
+        cameraPos.y = groundLevel - getPlayerBoxMin().y; // Snap feet exactly to ground level
+        velocity.y = 0.0f;
+        onGround = true;
+    }
+    else {
+        // Player is either moving upwards or is already above ground level
+        onGround = false;
+    }
+}
+
+
+// -------------------- Cube Geometry Data --------------------
+// Each vertex: position (3), normal (3), texCoord (2)
+// Centered at origin, size 1x1x1
+float cubeVertices[] = {
+    // Position           Normal      TexCoord
+    // Front face (+Z)
+   -0.5f, -0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+    0.5f, -0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f,
+    0.5f,  0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  1.0f, 1.0f,
+    0.5f,  0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  1.0f, 1.0f,
+   -0.5f,  0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f,
+   -0.5f, -0.5f,  0.5f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+   // Right face (+X)
+   0.5f, -0.5f,  0.5f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f, // Reuse texcoord for grid
+   0.5f, -0.5f, -0.5f,  1.0f, 0.0f, 0.0f,  1.0f, 0.0f,
+   0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,  1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,  1.0f, 0.0f, 0.0f,  1.0f, 1.0f,
+   0.5f,  0.5f,  0.5f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f,
+   0.5f, -0.5f,  0.5f,  1.0f, 0.0f, 0.0f,  0.0f, 0.0f,
+   // Back face (-Z)
+   0.5f, -0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  0.0f, 0.0f,
+  -0.5f, -0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  1.0f, 0.0f,
+  -0.5f,  0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  1.0f, 1.0f,
+   0.5f,  0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  0.0f, 1.0f,
+   0.5f, -0.5f, -0.5f,  0.0f, 0.0f,-1.0f,  0.0f, 0.0f,
+   // Left face (-X)
+  -0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f,  0.0f, 0.0f,
+  -0.5f, -0.5f,  0.5f, -1.0f, 0.0f, 0.0f,  1.0f, 0.0f,
+  -0.5f,  0.5f,  0.5f, -1.0f, 0.0f, 0.0f,  1.0f, 1.0f,
+  -0.5f,  0.5f,  0.5f, -1.0f, 0.0f, 0.0f,  1.0f, 1.0f,
+  -0.5f,  0.5f, -0.5f, -1.0f, 0.0f, 0.0f,  0.0f, 1.0f,
+  -0.5f, -0.5f, -0.5f, -1.0f, 0.0f, 0.0f,  0.0f, 0.0f,
+  // Top face (+Y)
+-0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
+ 0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f,
+ 0.5f,  0.5f, -0.5f,  0.0f, 1.0f, 0.0f,  1.0f, 1.0f,
+ 0.5f,  0.5f, -0.5f,  0.0f, 1.0f, 0.0f,  1.0f, 1.0f,
+-0.5f,  0.5f, -0.5f,  0.0f, 1.0f, 0.0f,  0.0f, 1.0f,
+-0.5f,  0.5f,  0.5f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
+// Bottom face (-Y)
+-0.5f, -0.5f, -0.5f,  0.0f,-1.0f, 0.0f,  0.0f, 0.0f,
+ 0.5f, -0.5f, -0.5f,  0.0f,-1.0f, 0.0f,  1.0f, 0.0f,
+ 0.5f, -0.5f,  0.5f,  0.0f,-1.0f, 0.0f,  1.0f, 1.0f,
+ 0.5f, -0.5f,  0.5f,  0.0f,-1.0f, 0.0f,  1.0f, 1.0f,
+-0.5f, -0.5f,  0.5f,  0.0f,-1.0f, 0.0f,  0.0f, 1.0f,
+-0.5f, -0.5f, -0.5f,  0.0f,-1.0f, 0.0f,  0.0f, 0.0f
+};
+
+// Outline vertices (just the edges of a cube) - More complex to define correctly this way.
+// It's simpler to reuse the cube vertices and draw in GL_LINE mode, but that draws diagonals.
+// For a proper wireframe, you need specific line segments. Let's stick to the simpler
+// scaled cube + GL_LINE polygon mode approach for now, even if it draws extra lines.
+// We'll reuse the cubeVBO for the outline drawing.
+
+// -------------------- Instance Data --------------------
+// Generate instance offsets for blocks around the camera position.
+// Blocks are placed at y=0.
+std::vector<glm::vec3> getVisibleInstances(const glm::vec3& camPos) {
+    std::vector<glm::vec3> offsets;
+    // Center the grid around the block the camera is currently over
+    int camBlockX = static_cast<int>(floor(camPos.x / BLOCK_SIZE));
+    int camBlockZ = static_cast<int>(floor(camPos.z / BLOCK_SIZE));
+
+    for (int dz = -RENDER_RADIUS; dz <= RENDER_RADIUS; ++dz) {
+        for (int dx = -RENDER_RADIUS; dx <= RENDER_RADIUS; ++dx) {
+            // Calculate world position for the center of the block
+            float blockCenterX = (camBlockX + dx + 0.5f) * BLOCK_SIZE;
+            float blockCenterZ = (camBlockZ + dz + 0.5f) * BLOCK_SIZE;
+            // The instance offset should be the *corner* or *center*?
+            // The shader adds aPos (from -0.5 to 0.5) to aOffset.
+            // So aOffset should be the *center* of the block.
+            // Since blocks are at y=0, the center is (x + 0.5, 0.0, z + 0.5) * BLOCK_SIZE? No.
+            // The vertices are already centered around 0,0,0.
+            // So the offset should just be the position of the block's origin (min corner).
+            // Let's place blocks such that their minimum corner is at (x, 0, z).
+            // The center would then be (x+0.5, 0.0, z+0.5).
+            // If we want the block at integer coords (0,0,0), (1,0,0) etc.
+            // its center should be at (0.5, 0.0, 0.5), (1.5, 0.0, 0.5) etc.
+            // So the offset needs to be the center position.
+            offsets.push_back(glm::vec3((float)(camBlockX + dx) * BLOCK_SIZE + 0.5f * BLOCK_SIZE,
+                0.0f, // Blocks are at y=0
+                (float)(camBlockZ + dz) * BLOCK_SIZE + 0.5f * BLOCK_SIZE));
+        }
+    }
+    return offsets;
+}
+
+
+// -------------------- Voxel Shader Sources --------------------
+// Vertex shader: applies the per-instance offset.
+const char* voxelVertexShaderSrc = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;       // Vertex position (local offset from center)
+layout (location = 1) in vec3 aNormal;    // Normal (unused, but kept for attribute index consistency)
+layout (location = 2) in vec2 aTexCoord;  // Texture coordinate for grid pattern
+layout (location = 3) in vec3 aOffset;    // Instance offset (world position of cube center)
+
+uniform mat4 model; // Usually identity for world-space voxels, but kept for flexibility
+uniform mat4 view;
+uniform mat4 projection;
+
+out vec2 TexCoord; // Pass texcoord to fragment shader
+
+void main(){
+    // Calculate world position of the vertex for this instance
+    vec3 worldPos = aPos + aOffset;
+    // Apply model (usually identity), view, and projection transformations
+    gl_Position = projection * view * model * vec4(worldPos, 1.0);
+    // Pass texture coordinate through
+    TexCoord = aTexCoord;
+}
+)";
+
+// Fragment shader: renders a white stone block with a tight black grid overlay.
+const char* voxelFragmentShaderSrc = R"(
+#version 330 core
+in vec2 TexCoord; // Received from vertex shader
+out vec4 FragColor;
+
+// Use constants defined in C++ (or pass as uniforms if they need to change)
+const float gridSize = 24.0; // GRID_TEXTURE_SIZE
+const float lineWidth = 0.02; // GRID_LINE_THICKNESS
+
+void main(){
+    // Calculate fractional part of scaled texture coordinate
+    vec2 f = fract(TexCoord * gridSize);
+
+    // Check if the fragment lies within the border lines
+    if(f.x < lineWidth || f.x > 1.0 - lineWidth ||
+       f.y < lineWidth || f.y > 1.0 - lineWidth) {
+       // Draw black line
+       FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+    } else {
+       // Draw white base color
+       FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+    }
+}
+)";
+
+// Simple shader for drawing the outline (just uses color, no grid)
+const char* outlineVertexShaderSrc = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos; // Only need position for outline
+
+uniform mat4 model; // Model matrix for positioning and scaling the outline cube
+uniform mat4 view;
+uniform mat4 projection;
+
+void main() {
+    gl_Position = projection * view * model * vec4(aPos, 1.0);
+}
+)";
+
+const char* outlineFragmentShaderSrc = R"(
+#version 330 core
+out vec4 FragColor;
+uniform vec4 outlineColor; // Allow setting color via uniform
+
+void main() {
+    FragColor = outlineColor; // Use the uniform color
+}
+)";
+
+
+// -------------------- Main Function --------------------
+int main() {
+    if (!glfwInit()) {
+        std::cerr << "Failed to initialize GLFW\n";
+        return -1;
+    }
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE); // Required on Mac
+#endif
+
+    // Create a fullscreen window.
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+    if (!mode) {
+        std::cerr << "Failed to get video mode for primary monitor\n";
+        glfwTerminate();
+        return -1;
+    }
+    // Use the mode's resolution directly
+    GLFWwindow* window = glfwCreateWindow(mode->width, mode->height, "Voxel FPS Superflat (Simplified)", primaryMonitor, NULL);
+    if (!window) {
+        std::cerr << "Failed to create GLFW window\n";
+        glfwTerminate();
+        return -1;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSetFramebufferSizeCallback(window, framebuffer_size_callback);
+    glfwSetCursorPosCallback(window, mouse_callback);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED); // Hide and capture cursor
+
+    // Initialize GLAD
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD\n";
+        glfwTerminate();
+        return -1;
+    }
+
+    // Configure global OpenGL state
+    glEnable(GL_DEPTH_TEST); // Enable depth testing for 3D rendering
+
+    // Compile shader programs
+    GLuint voxelShaderProgram = compileShaderProgram(voxelVertexShaderSrc, voxelFragmentShaderSrc);
+    GLuint outlineShaderProgram = compileShaderProgram(outlineVertexShaderSrc, outlineFragmentShaderSrc);
+    GLint outlineColorLocation = glGetUniformLocation(outlineShaderProgram, "outlineColor");
+
+
+    // -------------------- Setup Cube Geometry (Shared VBO) --------------------
+    glGenVertexArrays(1, &cubeVAO);
+    glGenBuffers(1, &cubeVBO);
+
+    glBindVertexArray(cubeVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(cubeVertices), cubeVertices, GL_STATIC_DRAW);
+
+    // Vertex Attribute Pointers for Voxel Shader (uses pos, normal, texcoord)
+    // Position attribute (location 0)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    // Normal attribute (location 1) - needed to keep indices correct, even if unused in shader logic
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    // Texture Coordinate attribute (location 2)
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+
+    // -------------------- Setup Instance Buffer --------------------
+    glGenBuffers(1, &instanceVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+    // Allocate buffer, but don't fill it yet (GL_DYNAMIC_DRAW hint)
+    // Size 0 initially, will be resized in the loop.
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+
+    // Instance Offset attribute (location 3) - Add this attribute to cubeVAO
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glVertexAttribDivisor(3, 1); // Tell OpenGL this is an instanced vertex attribute.
+
+    glBindVertexArray(0); // Unbind cubeVAO for now
+
+    // -------------------- Setup Outline VAO --------------------
+    // The outline will reuse the cube's vertex positions but use a different shader
+    // and potentially different attribute setup if needed.
+    glGenVertexArrays(1, &outlineVAO);
+    glBindVertexArray(outlineVAO);
+
+    // Bind the *same* VBO containing the cube vertex data
+    glBindBuffer(GL_ARRAY_BUFFER, cubeVBO);
+
+    // Configure vertex attributes for the outline shader (only needs position)
+    // Position attribute (location 0)
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+
+    // Note: We don't need to set up instance data for the outline VAO,
+    // as we draw only one outline at a time using a model matrix.
+
+    glBindVertexArray(0); // Unbind outlineVAO
+
+
+    // -------------------- Main Render Loop --------------------
+    while (!glfwWindowShouldClose(window)) {
+        // Per-frame time logic
+        float currentFrame = static_cast<float>(glfwGetTime());
+        deltaTime = currentFrame - lastFrame;
+        lastFrame = currentFrame;
+
+        // Input
+        processInput(window);
+
+        // Update Physics / Player State
+        if (!onGround) {
+            velocity.y -= gravity * deltaTime; // Apply gravity if airborne
+        }
+        cameraPos += velocity * deltaTime; // Update position based on velocity
+
+        // Collision Detection / Response
+        handleCollision(); // Check for ground collision and update state
+
+        // Rendering
+        glClearColor(0.53f, 0.81f, 0.92f, 1.0f); // Light sky blue background
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        // Setup view and projection matrices
+        glm::vec3 front;
+        front.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+        front.y = sin(glm::radians(cameraPitch));
+        front.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+        front = glm::normalize(front);
+        glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::mat4 view = glm::lookAt(cameraPos, cameraPos + front, up);
+
+        // Get current window size for aspect ratio
+        int currentWidth, currentHeight;
+        glfwGetFramebufferSize(window, &currentWidth, &currentHeight);
+        float aspectRatio = (currentHeight == 0) ? 1.0f : (float)currentWidth / (float)currentHeight;
+
+        glm::mat4 projection = glm::perspective(glm::radians(103.0f), // FOV
+            aspectRatio,          // Aspect ratio
+            0.1f,                 // Near plane
+            (RENDER_RADIUS + 5) * BLOCK_SIZE * 2.0f); // Far plane based on render dist
+
+
+        // -------------------- Update Instance Data --------------------
+        std::vector<glm::vec3> instanceOffsets = getVisibleInstances(cameraPos);
+        glBindBuffer(GL_ARRAY_BUFFER, instanceVBO);
+        // Upload the new instance data for this frame
+        glBufferData(GL_ARRAY_BUFFER, instanceOffsets.size() * sizeof(glm::vec3),
+            instanceOffsets.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ARRAY_BUFFER, 0); // Unbind instance VBO
+
+
+        // -------------------- Draw the Voxel Grid --------------------
+        glUseProgram(voxelShaderProgram);
+        // Set view and projection uniforms (model is identity for world grid)
+        glm::mat4 modelMat = glm::mat4(1.0f); // Identity model matrix
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(modelMat));
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+        glUniformMatrix4fv(glGetUniformLocation(voxelShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
+        glBindVertexArray(cubeVAO); // Bind the VAO configured for instanced rendering
+        // Draw instances
+        if (!instanceOffsets.empty()) {
+            glDrawArraysInstanced(GL_TRIANGLES, 0, 36, instanceOffsets.size()); // 36 vertices per cube
+        }
+        glBindVertexArray(0);
+
+
+        // -------------------- Draw Block Selection Outline --------------------
+        glm::ivec3 selectedBlock = raycastForBlock();
+        // Check if the raycast returned a valid block coordinate
+        if (selectedBlock.x != -10000) {
+            // Calculate the model matrix for the outline cube
+            // Center the outline cube at the center of the selected block
+            glm::vec3 blockCenter = glm::vec3(
+                (float)selectedBlock.x * BLOCK_SIZE + 0.5f * BLOCK_SIZE,
+                0.5f * BLOCK_SIZE, // Center Y at 0.5 for a block from 0 to 1
+                (float)selectedBlock.z * BLOCK_SIZE + 0.5f * BLOCK_SIZE
+            );
+
+            glm::mat4 outlineModelMat = glm::translate(glm::mat4(1.0f), blockCenter);
+            // Scale it slightly larger than the actual block
+            outlineModelMat = glm::scale(outlineModelMat, glm::vec3(1.02f * BLOCK_SIZE)); // Slightly larger scale
+
+            glUseProgram(outlineShaderProgram);
+            // Set uniforms for the outline shader
+            glUniformMatrix4fv(glGetUniformLocation(outlineShaderProgram, "model"), 1, GL_FALSE, glm::value_ptr(outlineModelMat));
+            glUniformMatrix4fv(glGetUniformLocation(outlineShaderProgram, "view"), 1, GL_FALSE, glm::value_ptr(view));
+            glUniformMatrix4fv(glGetUniformLocation(outlineShaderProgram, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+            glUniform4f(outlineColorLocation, 1.0f, 1.0f, 1.0f, 1.0f); // White outline color
+
+            // Set OpenGL state for wireframe rendering
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); // Draw lines
+            glLineWidth(2.0f); // Make lines thicker
+            glDisable(GL_DEPTH_TEST); // Draw outline on top
+
+            glBindVertexArray(outlineVAO); // Bind the VAO configured for outline drawing
+            glDrawArrays(GL_TRIANGLES, 0, 36); // Draw the cube outlines (using triangle vertices)
+            glBindVertexArray(0);
+
+            // Reset OpenGL state
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL); // Back to filled polygons
+            glEnable(GL_DEPTH_TEST); // Re-enable depth testing
+        }
+
+
+        // Swap buffers and poll events
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
+
+    // Cleanup
+    glDeleteVertexArrays(1, &cubeVAO);
+    glDeleteVertexArrays(1, &outlineVAO);
+    glDeleteBuffers(1, &cubeVBO);
+    glDeleteBuffers(1, &instanceVBO);
+    glDeleteProgram(voxelShaderProgram);
+    glDeleteProgram(outlineShaderProgram);
+
+    glfwTerminate();
+    return 0;
+}
