@@ -1,0 +1,246 @@
+#define GL_SILENCE_DEPRECATION
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <iostream>
+#include <unordered_set>
+#include <vector>
+#include <cmath>
+
+// Hash function BEFORE use
+namespace std {
+    template<> struct hash<glm::ivec3> {
+        size_t operator()(const glm::ivec3& v) const noexcept {
+            return (hash<int>()(v.x) * 73856093) ^ (hash<int>()(v.y) * 19349663) ^ (hash<int>()(v.z) * 83492791);
+        }
+    };
+}
+
+using namespace std;
+
+unordered_set<glm::ivec3> placed, removed;
+
+int SW = 800, SH = 600;
+float dt = 0, lastT = 0, yaw = -90, pitch = 0, lastX = 400, lastY = 300;
+bool ground = true, firstMouse = true;
+glm::vec3 cam(0, 2.6f, 0), vel(0);
+
+void framebuffer_size_callback(GLFWwindow*, int w, int h) { glViewport(0, 0, w, h); }
+void mouse_callback(GLFWwindow*, double x, double y) {
+    if (firstMouse) { lastX = x; lastY = y; firstMouse = false; }
+    float dx = x - lastX, dy = lastY - y; lastX = x; lastY = y;
+    yaw += dx * 0.1f; pitch += dy * 0.1f;
+    pitch = glm::clamp(pitch, -89.f, 89.f);
+}
+
+GLuint makeShader(const char* vsrc, const char* fsrc) {
+    GLuint v = glCreateShader(GL_VERTEX_SHADER), f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v, 1, &vsrc, nullptr); glCompileShader(v);
+    glShaderSource(f, 1, &fsrc, nullptr); glCompileShader(f);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v); glAttachShader(p, f); glLinkProgram(p);
+    glDeleteShader(v); glDeleteShader(f);
+    return p;
+}
+
+glm::ivec3 raycast(glm::ivec3& prev, bool& hit) {
+    glm::vec3 d = glm::normalize(glm::vec3(cos(glm::radians(yaw)) * cos(glm::radians(pitch)),
+        sin(glm::radians(pitch)),
+        sin(glm::radians(yaw)) * cos(glm::radians(pitch))));
+    glm::ivec3 last;
+    hit = false;
+    for (float t = 0; t < 6; t += 0.05f) {
+        glm::vec3 p = cam + d * t;
+        glm::ivec3 b = floor(p);
+        if (b != last) {
+            if (placed.count(b) || (b.y == 0 && !removed.count(b))) { hit = true; prev = last; return b; }
+        }
+        last = b;
+    }
+    return glm::ivec3(-10000);
+}
+
+void process(GLFWwindow* w) {
+    glm::vec3 d(0), f(glm::normalize(glm::vec3(cos(glm::radians(yaw)), 0, sin(glm::radians(yaw)))));
+    glm::vec3 r = glm::cross(f, glm::vec3(0, 1, 0));
+    if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)d += f;
+    if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)d -= f;
+    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)d -= r;
+    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)d += r;
+    if (glm::length(d) > 0.01f)d = glm::normalize(d);
+    float s = 10; if (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)s *= 2;
+    vel.x = d.x * s; vel.z = d.z * s;
+    if (ground && glfwGetKey(w, GLFW_KEY_SPACE) == GLFW_PRESS) { vel.y = 5; ground = false; }
+    if (glfwGetKey(w, GLFW_KEY_ESCAPE) == GLFW_PRESS)glfwSetWindowShouldClose(w, true);
+}
+void collision() {
+    float feet = cam.y - 1.6f;
+    if (feet < 1) { cam.y = 2.6f; vel.y = 0; ground = true; }
+}
+
+vector<float> cube() {
+    float h = .5;
+    glm::vec3 p[] = { {-h,-h,h},{h,-h,h},{h,h,h},{h,h,h},{-h,h,h},{-h,-h,h},
+    {h,-h,h},{h,-h,-h},{h,h,-h},{h,h,-h},{h,h,h},{h,-h,h},
+    {h,-h,-h},{-h,-h,-h},{-h,h,-h},{-h,h,-h},{h,h,-h},{h,-h,-h},
+    {-h,-h,-h},{-h,-h,h},{-h,h,h},{-h,h,h},{-h,h,-h},{-h,-h,-h},
+    {-h,h,h},{h,h,h},{h,h,-h},{h,h,-h},{-h,h,-h},{-h,h,h},
+    {-h,-h,-h},{h,-h,-h},{h,-h,h},{h,-h,h},{-h,-h,h},{-h,-h,-h} };
+    glm::vec2 uv[] = {
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0},
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0},
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0},
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0},
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0},
+    {0,0},{1,0},{1,1},{1,1},{0,1},{0,0} };
+    vector<float>out; out.reserve(36 * 5);
+    for (int i = 0; i < 36; i++) {
+        out.push_back(p[i].x); out.push_back(p[i].y); out.push_back(p[i].z);
+        out.push_back(uv[i].x); out.push_back(uv[i].y);
+    }
+    return out;
+}
+
+const char* vert = R"(#version 330 core
+layout(location=0)in vec3 p;layout(location=1)in vec2 t;layout(location=2)in vec3 off;
+uniform mat4 view,proj,model;out vec2 uv;
+void main(){uv=t;gl_Position=proj*view*model*vec4(p+off,1);})";
+const char* frag = R"(#version 330 core
+in vec2 uv;out vec4 f;const float g=24,l=0.02;
+void main(){vec2 q=fract(uv*g);
+f= (q.x<l||q.x>1.-l||q.y<l||q.y>1.-l)?vec4(0,0,0,1):vec4(1,1,1,1);})";
+
+void crosshair() {
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(-1, 1, -1, 1, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glLineWidth(2);
+    glBegin(GL_LINES); glColor3f(0, 1, 0);
+    glVertex2f(-0.02f, 0); glVertex2f(0.02f, 0);
+    glVertex2f(0, -0.02f); glVertex2f(0, 0.02f);
+    glEnd();
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glEnable(GL_DEPTH_TEST);
+}
+
+int main() {
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    GLFWmonitor* m = glfwGetPrimaryMonitor();
+    auto mode = glfwGetVideoMode(m);
+    SW = mode->width; SH = mode->height; lastX = SW / 2; lastY = SH / 2;
+    GLFWwindow* win = glfwCreateWindow(SW, SH, "VoxelDemo", m, nullptr);
+    glfwMakeContextCurrent(win);
+    glfwSetFramebufferSizeCallback(win, framebuffer_size_callback);
+    glfwSetCursorPosCallback(win, mouse_callback);
+    glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+    glEnable(GL_DEPTH_TEST);
+
+    GLuint prog = makeShader(vert, frag);
+
+    GLuint vao, vbo, ivbo;
+    auto verts = cube();
+    glGenVertexArrays(1, &vao); glGenBuffers(1, &vbo);
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * verts.size(), verts.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0); glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)(3 * sizeof(float))); glEnableVertexAttribArray(1);
+
+    glGenBuffers(1, &ivbo);
+    glBindBuffer(GL_ARRAY_BUFFER, ivbo);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+
+    glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0); glEnableVertexAttribArray(2);
+    glVertexAttribDivisor(2, 1);
+    glBindVertexArray(0);
+
+    GLuint outlineVAO;
+    glGenVertexArrays(1, &outlineVAO);
+    glBindVertexArray(outlineVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, vbo);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+
+    bool prevL = false, prevR = false;
+    while (!glfwWindowShouldClose(win)) {
+        float t = glfwGetTime();
+        dt = t - lastT; lastT = t;
+        process(win);
+        if (!ground) vel.y -= 9.8f * dt;
+        cam += vel * dt;
+        collision();
+
+        glClearColor(0.53f, 0.81f, 0.92f, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glm::vec3 fwd = glm::normalize(glm::vec3(cos(glm::radians(yaw)) * cos(glm::radians(pitch)),
+            sin(glm::radians(pitch)),
+            sin(glm::radians(yaw)) * cos(glm::radians(pitch))));
+        glm::mat4 V = glm::lookAt(cam, cam + fwd, glm::vec3(0, 1, 0));
+        glm::mat4 P = glm::perspective(glm::radians(103.f), (float)SW / SH, 0.1f, 100.f);
+
+        glm::ivec3 adj; bool hit;
+        glm::ivec3 sel = raycast(adj, hit);
+
+        bool lmb = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool rmb = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        if (lmb && !prevL && hit) {
+            if (placed.count(sel)) placed.erase(sel);
+            else if (sel.y == 0) removed.insert(sel);
+        }
+        if (rmb && !prevR && hit) placed.insert(adj);
+        prevL = lmb; prevR = rmb;
+
+        vector<glm::vec3> offs;
+        int R = 50, x0 = (int)cam.x, z0 = (int)cam.z;
+        for (int z = z0 - R; z <= z0 + R; z++) for (int x = x0 - R; x <= x0 + R; x++) {
+            glm::ivec3 p(x, 0, z);
+            if (removed.count(p)) continue;
+            if (!placed.count(p)) offs.emplace_back(x, 0, z);
+        }
+        for (auto& p : placed) offs.emplace_back(p);
+
+        glBindBuffer(GL_ARRAY_BUFFER, ivbo);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(glm::vec3) * offs.size(), offs.data(), GL_DYNAMIC_DRAW);
+
+        glUseProgram(prog);
+        glm::mat4 M(1);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "model"), 1, 0, glm::value_ptr(M));
+        glUniformMatrix4fv(glGetUniformLocation(prog, "view"), 1, 0, glm::value_ptr(V));
+        glUniformMatrix4fv(glGetUniformLocation(prog, "proj"), 1, 0, glm::value_ptr(P));
+        glBindVertexArray(vao);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, 36, offs.size());
+        glBindVertexArray(0);
+
+        if (hit) {
+            glm::mat4 T = glm::translate(glm::mat4(1), glm::vec3(sel));
+            T = glm::scale(T, glm::vec3(1.05f));
+            glUseProgram(prog);
+            glUniformMatrix4fv(glGetUniformLocation(prog, "model"), 1, 0, glm::value_ptr(T));
+            glUniformMatrix4fv(glGetUniformLocation(prog, "view"), 1, 0, glm::value_ptr(V));
+            glUniformMatrix4fv(glGetUniformLocation(prog, "proj"), 1, 0, glm::value_ptr(P));
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glLineWidth(2);
+            glBindVertexArray(outlineVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 36);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        }
+
+        crosshair();
+        glfwSwapBuffers(win);
+        glfwPollEvents();
+    }
+    glfwTerminate();
+    return 0;
+}
