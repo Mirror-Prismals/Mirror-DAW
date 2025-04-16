@@ -1,0 +1,407 @@
+#define GL_SILENCE_DEPRECATION
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <iostream>
+#include <vector>
+#include <unordered_map>
+#include <cmath>
+#include <algorithm>
+#include <random>
+
+constexpr int CHUNK_SIZE = 16;
+constexpr int RENDER_DIST = 5;
+
+enum BlockType { AIR = 0, SOLID = 1 };
+
+struct ChunkKey {
+    int x, y, z;
+    bool operator==(const ChunkKey& o) const { return x == o.x && y == o.y && z == o.z; }
+};
+namespace std {
+    template<> struct hash<ChunkKey> {
+        size_t operator()(const ChunkKey& k) const {
+            return ((hash<int>()(k.x) ^ (hash<int>()(k.y) << 1)) >> 1) ^ (hash<int>()(k.z) << 1);
+        }
+    };
+}
+
+struct VoxelGrid {
+    int xmin, xmax, ymin, ymax, zmin, zmax;
+    int W, H, D;
+    std::vector<BlockType> data;
+
+    VoxelGrid()
+        : xmin(0), xmax(-1), ymin(0), ymax(-1), zmin(0), zmax(-1), W(0), H(0), D(0) {
+    }
+
+    VoxelGrid(int xmin_, int xmax_, int ymin_, int ymax_, int zmin_, int zmax_)
+        : xmin(xmin_), xmax(xmax_), ymin(ymin_), ymax(ymax_), zmin(zmin_), zmax(zmax_) {
+        W = xmax - xmin + 1;
+        H = ymax - ymin + 1;
+        D = zmax - zmin + 1;
+        data.resize(W * H * D, AIR);
+    }
+    int idx(int x, int y, int z) const {
+        return (x - xmin) + W * ((y - ymin) + H * (z - zmin));
+    }
+    BlockType get(int x, int y, int z) const {
+        if (x < xmin || x > xmax || y < ymin || y > ymax || z < zmin || z > zmax) return AIR;
+        return data[idx(x, y, z)];
+    }
+    void set(int x, int y, int z, BlockType t) {
+        if (x < xmin || x > xmax || y < ymin || y > ymax || z < zmin || z > zmax) return;
+        data[idx(x, y, z)] = t;
+    }
+};
+
+// --- BEGIN PERLIN NOISE IMPLEMENTATION (Ken Perlin style, public domain) ---
+static int p[512];
+void init_perlin(unsigned int seed = 1337) {
+    std::vector<int> perm(256);
+    for (int i = 0; i < 256; ++i) perm[i] = i;
+    std::mt19937 rng(seed);
+    std::shuffle(perm.begin(), perm.end(), rng);
+    for (int i = 0; i < 512; ++i) p[i] = perm[i & 255];
+}
+float fade(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+float my_lerp(float a, float b, float t) { return a + t * (b - a); }
+float grad(int hash, float x, float y, float z) {
+    int h = hash & 15;
+    float u = h < 8 ? x : y, v = h < 4 ? y : (h == 12 || h == 14 ? x : z);
+    return ((h & 1) ? -u : u) + ((h & 2) ? -v : v);
+}
+float perlin(float x, float y, float z) {
+    int X = (int)floor(x) & 255, Y = (int)floor(y) & 255, Z = (int)floor(z) & 255;
+    x -= floor(x); y -= floor(y); z -= floor(z);
+    float u = fade(x), v = fade(y), w = fade(z);
+    int A = p[X] + Y, AA = p[A] + Z, AB = p[A + 1] + Z;
+    int B = p[X + 1] + Y, BA = p[B] + Z, BB = p[B + 1] + Z;
+    return my_lerp(
+        my_lerp(
+            my_lerp(grad(p[AA], x, y, z), grad(p[BA], x - 1, y, z), u),
+            my_lerp(grad(p[AB], x, y - 1, z), grad(p[BB], x - 1, y - 1, z), u),
+            v
+        ),
+        my_lerp(
+            my_lerp(grad(p[AA + 1], x, y, z - 1), grad(p[BA + 1], x - 1, y, z - 1), u),
+            my_lerp(grad(p[AB + 1], x, y - 1, z - 1), grad(p[BB + 1], x - 1, y - 1, z - 1), u),
+            v
+        ),
+        w
+    );
+}
+// --- END PERLIN NOISE IMPLEMENTATION ---
+
+void generate_terrain_grid(VoxelGrid& grid) {
+    float freq1 = 0.07f, freq2 = 0.15f;
+    float erosion_strength = 0.6f;
+    int surfaceY = 32;
+    for (int x = grid.xmin; x <= grid.xmax; ++x) {
+        for (int z = grid.zmin; z <= grid.zmax; ++z) {
+            for (int y = grid.ymax; y >= grid.ymin; --y) {
+                float base = perlin(x * freq1, y * freq1, z * freq1);
+                float erosion = perlin(x * freq2 + 100, y * freq2 + 100, z * freq2 + 100);
+                float density = base - erosion * erosion_strength - ((float)y - surfaceY) * 0.03f;
+                if (density > 0.0f) {
+                    grid.set(x, y, z, SOLID);
+                }
+            }
+        }
+    }
+}
+
+struct LineVertex {
+    glm::vec3 pos;
+};
+
+struct Chunk {
+    ChunkKey key;
+    VoxelGrid voxels;
+    std::vector<LineVertex> lines;
+    GLuint vbo = 0;
+    size_t line_count = 0;
+    bool meshed = false;
+    bool dirty = true;
+
+    Chunk() : key{ 0,0,0 }, voxels(), lines(), vbo(0), line_count(0), meshed(false), dirty(true) {}
+    Chunk(const ChunkKey& k)
+        : key(k),
+        voxels(k.x* CHUNK_SIZE, k.x* CHUNK_SIZE + CHUNK_SIZE - 1,
+            k.y* CHUNK_SIZE, k.y* CHUNK_SIZE + CHUNK_SIZE - 1,
+            k.z* CHUNK_SIZE, k.z* CHUNK_SIZE + CHUNK_SIZE - 1),
+        vbo(0), line_count(0), meshed(false), dirty(true) {
+    }
+};
+
+// Only emit grid lines for faces exposed to air
+void emit_block_grid_lines(int x, int y, int z, int grid_res, std::vector<LineVertex>& lines, const VoxelGrid& grid) {
+    float step = 1.0f / grid_res;
+    float min = 0.0f, max = 1.0f;
+    // Face directions: -X, +X, -Y, +Y, -Z, +Z
+    const int dirs[6][3] = {
+        {-1,0,0}, {1,0,0}, {0,-1,0}, {0,1,0}, {0,0,-1}, {0,0,1}
+    };
+    for (int face = 0; face < 6; ++face) {
+        int nx = x + dirs[face][0];
+        int ny = y + dirs[face][1];
+        int nz = z + dirs[face][2];
+        if (grid.get(nx, ny, nz) != AIR) continue; // Only draw if neighbor is air
+
+        int u = (face < 2) ? 1 : 0;
+        int v = (face < 2) ? 2 : (face < 4 ? 2 : 1);
+        float fx = x, fy = y, fz = z;
+        float face_offset = (face % 2 == 0) ? min : max;
+        for (int i = 0; i <= grid_res; ++i) {
+            float a = i * step;
+            for (int j = 0; j <= grid_res; ++j) {
+                float b = j * step;
+                glm::vec3 p0(fx, fy, fz), p1(fx, fy, fz);
+                if (face < 2) { // Z faces
+                    p0[u] += a; p0[v] += b; p0[2] += face_offset;
+                    p1[u] += a; p1[v] += b; p1[2] += face_offset;
+                    if (j < grid_res) {
+                        p1[v] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[v] -= step;
+                    }
+                    if (i < grid_res) {
+                        p1[u] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[u] -= step;
+                    }
+                }
+                else if (face < 4) { // Y faces
+                    p0[u] += a; p0[1] += face_offset; p0[v] += b;
+                    p1[u] += a; p1[1] += face_offset; p1[v] += b;
+                    if (j < grid_res) {
+                        p1[v] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[v] -= step;
+                    }
+                    if (i < grid_res) {
+                        p1[u] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[u] -= step;
+                    }
+                }
+                else { // X faces
+                    p0[0] += face_offset; p0[u] += a; p0[v] += b;
+                    p1[0] += face_offset; p1[u] += a; p1[v] += b;
+                    if (j < grid_res) {
+                        p1[v] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[v] -= step;
+                    }
+                    if (i < grid_res) {
+                        p1[u] += step;
+                        lines.push_back({ p0 });
+                        lines.push_back({ p1 });
+                        p1[u] -= step;
+                    }
+                }
+            }
+        }
+    }
+}
+
+void mesh_chunk_grid_lines(Chunk& chunk, int grid_res) {
+    chunk.lines.clear();
+    for (int x = chunk.voxels.xmin; x <= chunk.voxels.xmax; ++x)
+        for (int y = chunk.voxels.ymin; y <= chunk.voxels.ymax; ++y)
+            for (int z = chunk.voxels.zmin; z <= chunk.voxels.zmax; ++z)
+                if (chunk.voxels.get(x, y, z) == SOLID)
+                    emit_block_grid_lines(x, y, z, grid_res, chunk.lines, chunk.voxels);
+    if (chunk.vbo == 0) glGenBuffers(1, &chunk.vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, chunk.vbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(LineVertex) * chunk.lines.size(), chunk.lines.data(), GL_STATIC_DRAW);
+    chunk.line_count = chunk.lines.size();
+    chunk.meshed = true;
+    chunk.dirty = false;
+}
+
+// --- Shader for lines ---
+const char* vert = R"(#version 330 core
+layout(location=0)in vec3 p;
+uniform mat4 view,proj;
+void main(){
+    gl_Position=proj*view*vec4(p,1);
+})";
+
+const char* frag = R"(#version 330 core
+out vec4 f;
+void main() { f = vec4(0,0,0,1); })";
+
+int SW = 800, SH = 600;
+float dt = 0, lastT = 0, yaw = -90, pitch = 0, lastX = 400, lastY = 300;
+bool onGround = true, firstMouse = true;
+glm::vec3 cam(0, 40.6f, 0), vel(0);
+
+void framebuffer(GLFWwindow*, int w, int h) { glViewport(0, 0, w, h); }
+void mouse(GLFWwindow*, double x, double y) {
+    if (firstMouse) { lastX = x; lastY = y; firstMouse = false; }
+    float dx = x - lastX, dy = lastY - y; lastX = x; lastY = y;
+    yaw += dx * 0.1f; pitch += dy * 0.1f;
+    pitch = glm::clamp(pitch, -89.f, 89.f);
+}
+
+GLuint makeProg(const char* vS, const char* fS) {
+    GLuint v = glCreateShader(GL_VERTEX_SHADER), f = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(v, 1, &vS, nullptr); glCompileShader(v);
+    glShaderSource(f, 1, &fS, nullptr); glCompileShader(f);
+    GLuint p = glCreateProgram();
+    glAttachShader(p, v); glAttachShader(p, f); glLinkProgram(p);
+    glDeleteShader(v); glDeleteShader(f); return p;
+}
+
+void process(GLFWwindow* w) {
+    glm::vec3 d(0), f(glm::normalize(glm::vec3(cos(glm::radians(yaw)), 0, sin(glm::radians(yaw)))));
+    glm::vec3 r = glm::cross(f, glm::vec3(0, 1, 0));
+    if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)d += f;
+    if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)d -= f;
+    if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)d -= r;
+    if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)d += r;
+    if (glm::length(d) > 0.01f) d = glm::normalize(d);
+    float s = 10; if (glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS)s *= 2;
+    vel.x = d.x * s; vel.z = d.z * s;
+    if (onGround && glfwGetKey(w, GLFW_KEY_SPACE) == GLFW_PRESS) { vel.y = 5; onGround = false; }
+    if (glfwGetKey(w, GLFW_KEY_ESCAPE) == GLFW_PRESS)glfwSetWindowShouldClose(w, true);
+}
+
+void collision() {
+    float feet = cam.y - 1.6f;
+    if (feet < 1) { cam.y = 2.6f; vel.y = 0; onGround = true; }
+}
+
+void crosshair() {
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity(); glOrtho(-1, 1, -1, 1, -1, 1);
+    glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+    glLineWidth(2);
+    glBegin(GL_LINES); glColor3f(0, 1, 0);
+    glVertex2f(-0.02f, 0); glVertex2f(0.02f, 0);
+    glVertex2f(0, -0.02f); glVertex2f(0, 0.02f);
+    glEnd();
+    glPopMatrix(); glMatrixMode(GL_PROJECTION); glPopMatrix();
+    glMatrixMode(GL_MODELVIEW); glEnable(GL_DEPTH_TEST);
+}
+
+std::unordered_map<ChunkKey, Chunk> chunks;
+
+void update_chunk_mesh_if_dirty(Chunk& chunk, int grid_res) {
+    if (chunk.dirty) {
+        mesh_chunk_grid_lines(chunk, grid_res);
+    }
+}
+
+void load_chunk(const ChunkKey& key) {
+    if (chunks.count(key)) return;
+    Chunk chunk(key);
+    generate_terrain_grid(chunk.voxels);
+    chunk.dirty = true;
+    chunks[key] = std::move(chunk);
+}
+
+void unload_far_chunks(const glm::ivec3& player_chunk) {
+    std::vector<ChunkKey> to_remove;
+    for (const auto& [key, chunk] : chunks) {
+        if (std::abs(key.x - player_chunk.x) > RENDER_DIST ||
+            std::abs(key.y - player_chunk.y) > 1 ||
+            std::abs(key.z - player_chunk.z) > RENDER_DIST) {
+            glDeleteBuffers(1, &chunk.vbo);
+            to_remove.push_back(key);
+        }
+    }
+    for (const auto& key : to_remove) chunks.erase(key);
+}
+
+int main() {
+    glfwInit();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    GLFWmonitor* mon = glfwGetPrimaryMonitor();
+    auto mode = glfwGetVideoMode(mon);
+    SW = mode->width; SH = mode->height; lastX = SW / 2; lastY = SH / 2;
+    GLFWwindow* win = glfwCreateWindow(SW, SH, "Voxel Grid Block Line LOD Experiment", &*mon, nullptr);
+    glfwMakeContextCurrent(win);
+    glfwSetFramebufferSizeCallback(win, framebuffer);
+    glfwSetCursorPosCallback(win, mouse);
+    glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
+
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    GLuint prog = makeProg(vert, frag);
+
+    GLuint vao;
+    glGenVertexArrays(1, &vao);
+
+    init_perlin(1337);
+
+    int chunk_y = 0;
+    int grid_res = 6; // Try 6, 4, 2, 1 for different visual effects!
+
+    while (!glfwWindowShouldClose(win)) {
+        float t = glfwGetTime();
+        dt = t - lastT; lastT = t;
+        process(win);
+        if (!onGround) vel.y -= 9.81f * dt;
+        cam += vel * dt;
+        collision();
+
+        glClearColor(0.53f, 0.81f, 0.92f, 1);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glm::vec3 dir = glm::normalize(glm::vec3(
+            cos(glm::radians(yaw)) * cos(glm::radians(pitch)),
+            sin(glm::radians(pitch)),
+            sin(glm::radians(yaw)) * cos(glm::radians(pitch))));
+        glm::mat4 V = glm::lookAt(cam, cam + dir, glm::vec3(0, 1, 0));
+        glm::mat4 P = glm::perspective(glm::radians(103.f), (float)SW / SH, 0.1f, 200.f);
+
+        glm::ivec3 player_chunk(
+            int(floor(cam.x / float(CHUNK_SIZE))),
+            chunk_y,
+            int(floor(cam.z / float(CHUNK_SIZE)))
+        );
+
+        for (int dx = -RENDER_DIST; dx <= RENDER_DIST; ++dx)
+            for (int dz = -RENDER_DIST; dz <= RENDER_DIST; ++dz) {
+                ChunkKey key{ player_chunk.x + dx, chunk_y, player_chunk.z + dz };
+                load_chunk(key);
+            }
+        unload_far_chunks(player_chunk);
+
+        glBindVertexArray(vao);
+        glUseProgram(prog);
+        glUniformMatrix4fv(glGetUniformLocation(prog, "view"), 1, 0, glm::value_ptr(V));
+        glUniformMatrix4fv(glGetUniformLocation(prog, "proj"), 1, 0, glm::value_ptr(P));
+
+        glLineWidth(1.5f);
+        for (auto& [key, chunk] : chunks) {
+            update_chunk_mesh_if_dirty(chunk, grid_res);
+            if (!chunk.meshed || chunk.line_count == 0) continue;
+            glBindBuffer(GL_ARRAY_BUFFER, chunk.vbo);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(LineVertex), (void*)0); glEnableVertexAttribArray(0);
+            glDrawArrays(GL_LINES, 0, chunk.line_count);
+        }
+
+        crosshair();
+        glfwSwapBuffers(win);
+        glfwPollEvents();
+    }
+    glfwTerminate();
+    return 0;
+}
